@@ -1,0 +1,276 @@
+"""Command line: ``grd-sgr``.
+
+    grd-sgr validate EID.xml [--communicator COM.xml] [--out DIR]
+    grd-sgr run EID.xml --prop base_uri=http://box:28100 --prop api_key=env:SGR_TOKEN \
+        [--evidence-url URL --evidence-header "Authorization: Bearer ..."] \
+        [--allow-write] [--functional --reaction-time 360] [--meter-eid M.xml ...] [--out DIR]
+    grd-sgr tariff-server [--host 127.0.0.1] [--port 8771] [--scenario normal]
+    grd-sgr tariff-run --scenarios normal,dst_spring --dwell 600 [--evidence-url ...] [--out DIR]
+    grd-sgr simulator ...   (the legacy casasmooth webhook harness, stdlib only)
+    grd-sgr list-tests
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import os
+import sys
+from pathlib import Path
+from typing import Any
+
+from .framework import REGISTRY, Result, Verdict, overall_verdict, summarize, utc_now_iso
+
+VERDICT_MARK = {
+    "PASS": "PASS", "FAIL": "FAIL", "INCONCLUSIVE": "INCONCL", "N/A": "N/A",
+    "HARDWARE_REQUIRED": "HW-REQ", "SKIPPED": "SKIP", "ERROR": "ERROR",
+}
+
+
+def parse_props(pairs: list[str], files: list[str]) -> dict[str, str]:
+    """``key=value`` pairs; ``value`` may be ``env:NAME`` so secrets stay out of
+    the shell history and of the report."""
+    props: dict[str, str] = {}
+    for f in files or []:
+        props.update({k: str(v) for k, v in json.loads(Path(f).read_text(encoding="utf-8")).items()})
+    for pair in pairs or []:
+        if "=" not in pair:
+            raise SystemExit(f"--prop expects key=value, got {pair!r}")
+        key, value = pair.split("=", 1)
+        props[key.strip()] = value
+    for key, value in list(props.items()):
+        if value.startswith("env:"):
+            name = value[4:]
+            if name not in os.environ:
+                raise SystemExit(f"--prop {key}: environment variable {name} is not set")
+            props[key] = os.environ[name]
+    return props
+
+
+def parse_headers(items: list[str]) -> dict[str, str]:
+    out = {}
+    for item in items or []:
+        if ":" not in item:
+            raise SystemExit(f"--evidence-header expects 'Name: value', got {item!r}")
+        name, value = item.split(":", 1)
+        value = value.strip()
+        if value.startswith("env:"):
+            value = os.environ.get(value[4:], "")
+        elif " env:" in value:
+            prefix, var = value.split(" env:", 1)
+            value = f"{prefix} {os.environ.get(var, '')}"
+        out[name.strip()] = value
+    return out
+
+
+def print_results(results: list[Result]) -> None:
+    width = max((len(r.subject) for r in results), default=10)
+    width = min(max(width, 10), 60)
+    for r in results:
+        mark = VERDICT_MARK.get(r.verdict.value, r.verdict.value)
+        print(f"  {r.test_id:<3} {mark:<8} {r.subject[:width]:<{width}}  {r.title}")
+        for f in r.findings:
+            if f.severity in ("error", "warning"):
+                print(f"        {f.severity}: {f.message}")
+    counts = ", ".join(f"{k} {v}" for k, v in sorted(summarize(results).items()))
+    overall = overall_verdict(results)
+    print(f"\n  overall: {(overall or Verdict.INCONCLUSIVE).value} ({counts})")
+
+
+def finish(results: list[Result], subject: dict[str, Any], out: str | None) -> int:
+    from .report import run_metadata, write_all
+
+    print_results(results)
+    if out:
+        paths = write_all(results, run_metadata(subject), Path(out))
+        print("  reports: " + ", ".join(str(p) for p in paths.values()))
+    return 1 if overall_verdict(results) == Verdict.FAIL else 0
+
+
+def cmd_validate(args: argparse.Namespace) -> int:
+    from .eid import parse_eid
+    from .runner import run_static
+
+    path = Path(args.eid)
+    results = run_static(path, args.communicator, set(args.only.split(",")) if args.only else None)
+    try:
+        eid = parse_eid(path)
+        subject = {"device_name": eid.device_name, "manufacturer": eid.manufacturer, "eid": path.name}
+    except Exception:
+        subject = {"eid": path.name}
+    print(f"grd-sgr validate {path.name}")
+    return finish(results, subject, args.out)
+
+
+def cmd_run(args: argparse.Namespace) -> int:
+    from .client import RawRestCaller, SgrDevice, instantiate_text
+    from .eid import parse_eid
+    from .evidence import EvidenceClient
+    from .runner import run_dynamic, run_static
+    from .tests_dynamic import DynamicContext
+
+    path = Path(args.eid)
+    props = parse_props(args.prop, args.props)
+    only = set(args.only.split(",")) if args.only else None
+    results = run_static(path, args.communicator, only)
+    eid = parse_eid(instantiate_text(path.read_text(encoding="utf-8"), props))
+    raw = RawRestCaller(path, props) if eid.interface_type == "rest" else None
+    evidence = None
+    if args.evidence_url:
+        evidence = EvidenceClient(args.evidence_url, parse_headers(args.evidence_header))
+    meter = None
+    meter_point = None
+    if args.meter_eid:
+        meter = SgrDevice(args.meter_eid, parse_props(args.meter_prop, args.meter_props))
+        if not args.meter_point or "." not in args.meter_point:
+            raise SystemExit("--meter-point FP.DP is required with --meter-eid")
+        meter_point = tuple(args.meter_point.split(".", 1))
+    ctx = DynamicContext(
+        eid=eid, eid_label=path.name, device=SgrDevice(path, props), raw=raw, evidence=evidence,
+        allow_write=args.allow_write, functional=args.functional,
+        readback_timeout_s=args.readback_timeout, reaction_time_s=args.reaction_time, hold_s=args.hold,
+        meter=meter, meter_point=meter_point, meter_tolerance_kw=args.meter_tolerance,
+    )
+
+    async def go() -> list[Result]:
+        if meter is not None:
+            await meter.connect()
+        return await run_dynamic(ctx, only)
+
+    print(f"grd-sgr run {path.name} — started {utc_now_iso()}"
+          + (" — WRITES ENABLED" if args.allow_write else " — read-only"))
+    results += asyncio.run(go())
+    subject = {"device_name": eid.device_name, "manufacturer": eid.manufacturer, "eid": path.name,
+               "base_uri": props.get("base_uri", "")}
+    return finish(results, subject, args.out)
+
+
+def cmd_tariff_server(args: argparse.Namespace) -> int:
+    from .tariff_server import serve
+
+    serve(args.host, args.port, args.scenario)
+    return 0
+
+
+def cmd_tariff_run(args: argparse.Namespace) -> int:
+    from aiohttp import web
+
+    from .evidence import EvidenceClient
+    from .runner import TariffRunContext, run_tariff_tests
+    from .tariff_server import SCENARIOS, TariffServer
+
+    scenarios = [s.strip() for s in args.scenarios.split(",") if s.strip()]
+    for s in scenarios:
+        if s not in SCENARIOS:
+            raise SystemExit(f"unknown scenario {s!r}; choose from {', '.join(SCENARIOS)}")
+    server = TariffServer(scenario=scenarios[0])
+    evidence = EvidenceClient(args.evidence_url, parse_headers(args.evidence_header)) if args.evidence_url else None
+
+    async def go():
+        runner = web.AppRunner(server.app())
+        await runner.setup()
+        await web.TCPSite(runner, args.host, args.port).start()
+        start_seq = 0
+        if evidence is not None:
+            start_seq = int((await evidence.status()).get("last_seq") or 0)
+        timeline = []
+        try:
+            for s in scenarios:
+                server.scenario = s
+                begin = utc_now_iso()
+                print(f"  serving scenario {s} for {args.dwell}s (point the EMS at http://{args.host}:{args.port}/v1/tariffs)")
+                await asyncio.sleep(args.dwell)
+                timeline.append((s, begin, utc_now_iso()))
+        finally:
+            await runner.cleanup()
+        events = await evidence.events(after_seq=start_seq, limit=5000) if evidence is not None else None
+        return timeline, events
+
+    timeline, events = asyncio.run(go())
+    ctx = TariffRunContext(server.request_log(), timeline, events, server.oidc)
+    results = run_tariff_tests(ctx)
+    return finish(results, {"device_name": "EMS under test", "eid": "(tariff client)"}, args.out)
+
+
+def cmd_list(args: argparse.Namespace) -> int:
+    from . import runner  # noqa: F401 - registers all tests
+
+    for case in REGISTRY.values():
+        flags = " [write]" if case.needs_write else ""
+        print(f"{case.test_id:<3} {case.family} {case.testability.value}  {case.title}{flags}")
+    return 0
+
+
+def cmd_simulator(args: argparse.Namespace) -> int:
+    from . import legacy_simulator
+
+    sys.argv = ["grd_simulator"] + args.rest
+    legacy_simulator.main()
+    return 0
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="grd-sgr", description="SmartGridready test bench for energy management systems")
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    v = sub.add_parser("validate", help="static checks S1-S6 of an EID (and a communicator declaration)")
+    v.add_argument("eid")
+    v.add_argument("--communicator")
+    v.add_argument("--only", help="comma-separated test ids")
+    v.add_argument("--out", help="write report.json / report.junit.xml / report.md here")
+    v.set_defaults(func=cmd_validate)
+
+    r = sub.add_parser("run", help="drive an EMS through its EID as a DSO flexibility manager")
+    r.add_argument("eid")
+    r.add_argument("--prop", action="append", default=[], help="configuration value key=value (value may be env:NAME)")
+    r.add_argument("--props", action="append", default=[], help="JSON file of configuration values")
+    r.add_argument("--communicator")
+    r.add_argument("--evidence-url", help="base URL of the EMS evidence API (sgr-evidence/1)")
+    r.add_argument("--evidence-header", action="append", default=[], help="'Name: value' (value may use env:NAME)")
+    r.add_argument("--allow-write", action="store_true", help="allow commands (P3/P4/P6/P7)")
+    r.add_argument("--functional", action="store_true", help="also run functional tests F (minutes per mode)")
+    r.add_argument("--reaction-time", type=float, help="declared reaction time of the EMS, seconds")
+    r.add_argument("--readback-timeout", type=float, default=10.0)
+    r.add_argument("--hold", type=float, default=60.0, help="seconds a mode is held during F tests")
+    r.add_argument("--meter-eid", help="EID of an independent reference meter at the grid connection")
+    r.add_argument("--meter-prop", action="append", default=[])
+    r.add_argument("--meter-props", action="append", default=[])
+    r.add_argument("--meter-point", help="FP.DP of the meter giving grid power in kW (+ import)")
+    r.add_argument("--meter-tolerance", type=float, default=0.3, help="kW")
+    r.add_argument("--only", help="comma-separated test ids")
+    r.add_argument("--out")
+    r.set_defaults(func=cmd_run)
+
+    t = sub.add_parser("tariff-server", help="serve the VSE dynamic-tariff API (v1 and v2)")
+    t.add_argument("--host", default="127.0.0.1")
+    t.add_argument("--port", type=int, default=8771)
+    t.add_argument("--scenario", default="normal")
+    t.set_defaults(func=cmd_tariff_server)
+
+    tr = sub.add_parser("tariff-run", help="serve scenarios in turn, then judge the EMS (T1-T6)")
+    tr.add_argument("--host", default="127.0.0.1")
+    tr.add_argument("--port", type=int, default=8771)
+    tr.add_argument("--scenarios", default="normal,dst_spring,dst_autumn,unpublished,gaps,http_500,malformed")
+    tr.add_argument("--dwell", type=float, default=600.0, help="seconds per scenario")
+    tr.add_argument("--evidence-url")
+    tr.add_argument("--evidence-header", action="append", default=[])
+    tr.add_argument("--out")
+    tr.set_defaults(func=cmd_tariff_run)
+
+    ls = sub.add_parser("list-tests", help="print the test catalogue")
+    ls.set_defaults(func=cmd_list)
+
+    sim = sub.add_parser("simulator", help="legacy casasmooth webhook harness (not SmartGridready)")
+    sim.add_argument("rest", nargs=argparse.REMAINDER)
+    sim.set_defaults(func=cmd_simulator)
+    return p
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    return int(args.func(args) or 0)
+
+
+if __name__ == "__main__":  # pragma: no cover
+    sys.exit(main())

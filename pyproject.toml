@@ -1,0 +1,60 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "grd-smartgridready"
+dynamic = ["version"]
+description = "SmartGridready test bench for energy management systems: drives the EMS through its own EID as a DSO flexibility manager, serves the VSE dynamic-tariff API, and validates declarations."
+readme = "README.md"
+requires-python = ">=3.10"
+# The tool is MIT; the vendored SmartGridready specification keeps its own
+# BSD-3-Clause licence (src/grd_sgr/spec/LICENSE-SmartGridready.txt).
+license = "MIT AND BSD-3-Clause"
+license-files = ["LICENSE", "src/grd_sgr/spec/LICENSE-SmartGridready.txt"]
+authors = [{ name = "Teleia SaRL" }]
+keywords = ["smartgridready", "sgr", "ems", "dso", "flexibility", "dynamic tariff", "test"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development :: Testing",
+]
+dependencies = [
+    "sgr-commhandler>=0.5.1,<0.6",
+    "xmlschema>=4.0",
+    "jsonschema>=4.20",
+    "aiohttp>=3.9",
+    "jmespath>=1.0",
+    "tzdata; platform_system == 'Windows'",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio>=0.24", "ruff>=0.5"]
+
+[project.urls]
+Repository = "https://github.com/chrohrbach/grd-smartgridready"
+
+[project.scripts]
+grd-sgr = "grd_sgr.cli:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "grd_sgr.__version__" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+grd_sgr = ["spec/*", "spec/**/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+
+[tool.ruff]
+line-length = 100
+extend-exclude = ["src/grd_sgr/spec"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["E501"]

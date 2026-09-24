@@ -1,0 +1,531 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  casasmooth — SmartGridready grid interface (SGCP), REST.
+
+  The DSO-facing side of casasmooth described as a SmartGridready Product, so a
+  flexibility manager drives it through the official CommHandler without any
+  casasmooth-specific code. Served by the box itself at GET /api/sgr/sgcp/eid.
+  Implementation: app/api/sgr_grid_interface.py + app/services/sgr_grid_interface.py.
+  Plan and test catalogue: docs/proposals/plan_test_smartgridready.md.
+
+  Validated in CI against the SGr XSD and instantiated by the real
+  sgr-commhandler DeviceBuilder (app/tests/test_sgr_grid_interface_eid.py).
+  Not (yet) declared by the SmartGridready association: release Draft, testState None.
+-->
+<DeviceFrame xmlns="http://www.smartgridready.com/ns/V0/"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xsi:schemaLocation="http://www.smartgridready.com/ns/V0/ ../../SchemaDatabase/SGr/Product/Product.xsd">
+  <deviceName>casasmooth Grid Interface REST</deviceName>
+  <manufacturerName>teleia</manufacturerName>
+  <specificationOwnerIdentification>0</specificationOwnerIdentification>
+  <releaseNotes>
+    <state>Draft</state>
+    <changeLog>
+      <version>1.0.0</version>
+      <date>2026-09-25</date>
+      <author>teleia</author>
+      <comment>First declaration: UniDirFlexLoadMgmt 2m, FlexMgmt 4m, Metering ActivePowerAC</comment>
+    </changeLog>
+  </releaseNotes>
+  <deviceInformation>
+    <legibleDescription>
+      <textElement>
+        <![CDATA[
+          <p>casasmooth is an energy management system for homes and buildings. Towards the grid
+          operator it offers a SmartGridready connection point (SGCP): the flexibility manager sets
+          the load-management mode (NORMAL, REDUCED, MAX, LOCKED), restricts the power allowed at
+          the grid connection point for a given duration, and reads the grid power.</p>
+          <p>Commands are enforced through casasmooth's connection-point power cap and its
+          SmartGridready device control; every command, decision and device command is journalled
+          and readable through the evidence API (sgr-evidence/1).</p>
+        ]]>
+      </textElement>
+      <language>en</language>
+      <uri>https://www.casasmooth.com</uri>
+    </legibleDescription>
+    <legibleDescription>
+      <textElement>
+        <![CDATA[
+          <p>casasmooth ist ein Energiemanagementsystem für Wohnungen und Gebäude. Gegenüber dem
+          Netzbetreiber bietet es einen SmartGridready-Netzanschlusspunkt (SGCP): der
+          Flexibilitätsmanager setzt den Lastmanagement-Betriebsmodus (NORMAL, REDUCED, MAX,
+          LOCKED), begrenzt die zulässige Leistung am Netzanschlusspunkt für eine bestimmte Dauer
+          und liest die Netzleistung.</p>
+        ]]>
+      </textElement>
+      <language>de</language>
+      <uri>https://www.casasmooth.com</uri>
+    </legibleDescription>
+    <legibleDescription>
+      <textElement>
+        <![CDATA[
+          <p>casasmooth est un système de gestion de l'énergie pour logements et bâtiments. Vers le
+          gestionnaire de réseau, il offre un point de raccordement SmartGridready (SGCP) : le
+          gestionnaire de flexibilité fixe le mode de gestion de charge (NORMAL, REDUCED, MAX,
+          LOCKED), restreint la puissance admise au raccordement pour une durée donnée et lit la
+          puissance au raccordement.</p>
+        ]]>
+      </textElement>
+      <language>fr</language>
+      <uri>https://www.casasmooth.com</uri>
+    </legibleDescription>
+    <deviceCategory>CEM</deviceCategory>
+    <isLocalControl>true</isLocalControl>
+    <softwareRevision>2.0</softwareRevision>
+    <manufacturerSpecificationIdentification>casasmooth</manufacturerSpecificationIdentification>
+    <levelOfOperation>4m</levelOfOperation>
+    <versionNumber>
+      <primaryVersionNumber>1</primaryVersionNumber>
+      <secondaryVersionNumber>0</secondaryVersionNumber>
+      <subReleaseVersionNumber>0</subReleaseVersionNumber>
+    </versionNumber>
+    <testState>None</testState>
+    <programmerHints>
+      <textElement>
+        <![CDATA[
+          <p>Authentication: the configuration value <i>api_key</i> is the box's SGr webhook token.
+          It is exchanged once per connection for a session token valid 24 h (POST
+          /api/sgr/sgcp/session); reconnect daily.</p>
+          <p>Writing requires the owner's consent (FlexMgmt GetSettings.WriteAccess); without it,
+          writes answer 403 and are journalled as rejected.</p>
+          <p>OpModeLoadCmd returns the last command; OpLoadState returns the mode actually enforced.
+          They differ when MaximumLockTime has elapsed, when a restriction is deferred by
+          MinimumRunTime, after 24 h without a new command (fall-back to NORMAL), and while the
+          engine does not apply commands to real devices (engine offline or in simulation,
+          observe-only): the command is then recorded, journalled as not_enforceable, and takes
+          effect if the engine applies again within its lock window. The evidence status says
+          which (apply_enabled, not_applying_reason).</p>
+          <p>RestrictPower bounds the import at the connection point (MaximumPowerKw). The feed-in
+          bound (MinimumPowerKw) needs PV control, declared in GetSettings.PVControl.</p>
+          <p>Writes carry the value as a query parameter (OpModeLoadCmd=..., RestrictPower=&lt;JSON&gt;):
+          sgr-commhandler up to 0.5.2 never sends the requestBody of a REST write call. A JSON
+          body with the same field is accepted too.</p>
+          <p>Evidence: GET /api/sgr/evidence/status and /api/sgr/evidence/events?after_seq=N
+          (same credentials) return declared parameters and the journal of commands, decisions and
+          device commands, correlated by id.</p>
+        ]]>
+      </textElement>
+      <language>en</language>
+    </programmerHints>
+  </deviceInformation>
+  <configurationList>
+    <configurationListElement>
+      <name>base_uri</name>
+      <dataType>
+        <string />
+      </dataType>
+      <defaultValue>http://homeassistant.local:28100</defaultValue>
+      <configurationDescription>
+        <textElement>Base address of the casasmooth API (LAN, or the https tunnel of the box)</textElement>
+        <language>en</language>
+        <label>Base URI</label>
+      </configurationDescription>
+    </configurationListElement>
+    <configurationListElement>
+      <name>api_key</name>
+      <dataType>
+        <string />
+      </dataType>
+      <configurationDescription>
+        <textElement>SGr webhook token of the box (cache/cs_sgr_webhook_token.txt or cs_secrets.yaml)</textElement>
+        <language>en</language>
+        <label>API key</label>
+      </configurationDescription>
+    </configurationListElement>
+    <configurationListElement>
+      <name>curtailment_pct</name>
+      <dataType>
+        <float32 />
+      </dataType>
+      <defaultValue>30</defaultValue>
+      <configurationDescription>
+        <textElement>Declared Curtailment of REDUCED, percent (grid_interface.curtailment_pct)</textElement>
+        <language>en</language>
+        <label>Curtailment</label>
+      </configurationDescription>
+    </configurationListElement>
+    <configurationListElement>
+      <name>minimum_load_kw</name>
+      <dataType>
+        <float32 />
+      </dataType>
+      <defaultValue>2</defaultValue>
+      <configurationDescription>
+        <textElement>Declared MinimumLoad of LOCKED, kW (grid_interface.minimum_load_kw)</textElement>
+        <language>en</language>
+        <label>Minimum load</label>
+      </configurationDescription>
+    </configurationListElement>
+    <configurationListElement>
+      <name>maximum_lock_time_min</name>
+      <dataType>
+        <float32 />
+      </dataType>
+      <defaultValue>120</defaultValue>
+      <configurationDescription>
+        <textElement>Declared MaximumLockTime of REDUCED/LOCKED, minutes (grid_interface.maximum_lock_time_min)</textElement>
+        <language>en</language>
+        <label>Maximum lock time</label>
+      </configurationDescription>
+    </configurationListElement>
+    <configurationListElement>
+      <name>minimum_run_time_min</name>
+      <dataType>
+        <float32 />
+      </dataType>
+      <defaultValue>20</defaultValue>
+      <configurationDescription>
+        <textElement>Declared MinimumRunTime after a restriction, minutes (grid_interface.minimum_run_time_min)</textElement>
+        <language>en</language>
+        <label>Minimum run time</label>
+      </configurationDescription>
+    </configurationListElement>
+  </configurationList>
+  <interfaceList>
+    <restApiInterface>
+      <restApiInterfaceDescription>
+        <restApiInterfaceSelection>URI</restApiInterfaceSelection>
+        <restApiUri>{{base_uri}}</restApiUri>
+        <restApiAuthenticationMethod>BearerSecurityScheme</restApiAuthenticationMethod>
+        <restApiBearer>
+          <restApiServiceCall>
+            <requestHeader>
+              <header>
+                <headerName>Content-Type</headerName>
+                <value>application/json</value>
+              </header>
+              <header>
+                <headerName>Accept</headerName>
+                <value>application/json</value>
+              </header>
+            </requestHeader>
+            <requestMethod>POST</requestMethod>
+            <requestPath>/api/sgr/sgcp/session</requestPath>
+            <requestBody>{"api_key": "{{api_key}}"}</requestBody>
+            <responseQuery>
+              <queryType>JMESPathExpression</queryType>
+              <query>access_token</query>
+            </responseQuery>
+          </restApiServiceCall>
+        </restApiBearer>
+      </restApiInterfaceDescription>
+      <functionalProfileList>
+        <functionalProfileListElement>
+          <functionalProfile>
+            <functionalProfileName>UniDirFlexLoadMgmt</functionalProfileName>
+            <functionalProfileIdentification>
+              <specificationOwnerIdentification>0</specificationOwnerIdentification>
+              <functionalProfileCategory>SGCP</functionalProfileCategory>
+              <functionalProfileType>UniDirFlexLoadMgmt</functionalProfileType>
+              <levelOfOperation>2m</levelOfOperation>
+              <versionNumber>
+                <primaryVersionNumber>1</primaryVersionNumber>
+                <secondaryVersionNumber>0</secondaryVersionNumber>
+                <subReleaseVersionNumber>0</subReleaseVersionNumber>
+              </versionNumber>
+            </functionalProfileIdentification>
+          </functionalProfile>
+          <genericAttributeList>
+            <genericAttributeListElement>
+              <name>Curtailment</name>
+              <dataType>
+                <float32 />
+              </dataType>
+              <value>{{curtailment_pct}}</value>
+              <unit>PERCENT</unit>
+            </genericAttributeListElement>
+            <genericAttributeListElement>
+              <name>MinimumLoad</name>
+              <dataType>
+                <float32 />
+              </dataType>
+              <value>{{minimum_load_kw}}</value>
+              <unit>KILOWATTS</unit>
+            </genericAttributeListElement>
+            <genericAttributeListElement>
+              <name>MaximumLockTime</name>
+              <dataType>
+                <float32 />
+              </dataType>
+              <value>{{maximum_lock_time_min}}</value>
+              <unit>MINUTES</unit>
+            </genericAttributeListElement>
+            <genericAttributeListElement>
+              <name>MinimumRunTime</name>
+              <dataType>
+                <float32 />
+              </dataType>
+              <value>{{minimum_run_time_min}}</value>
+              <unit>MINUTES</unit>
+            </genericAttributeListElement>
+          </genericAttributeList>
+          <dataPointList>
+            <dataPointListElement>
+              <dataPoint>
+                <dataPointName>OpModeLoadCmd</dataPointName>
+                <dataDirection>RW</dataDirection>
+                <dataType>
+                  <enum>
+                    <enumEntry>
+                      <literal>NORMAL</literal>
+                    </enumEntry>
+                    <enumEntry>
+                      <literal>REDUCED</literal>
+                    </enumEntry>
+                    <enumEntry>
+                      <literal>MAX</literal>
+                    </enumEntry>
+                    <enumEntry>
+                      <literal>LOCKED</literal>
+                    </enumEntry>
+                  </enum>
+                </dataType>
+                <unit>NONE</unit>
+                <legibleDescription>
+                  <textElement>Setting the operation mode (last command)</textElement>
+                  <language>en</language>
+                </legibleDescription>
+              </dataPoint>
+              <restApiDataPointConfiguration>
+                <dataType>JSON_string</dataType>
+                <restApiReadServiceCall>
+                  <requestHeader>
+                    <header>
+                      <headerName>Accept</headerName>
+                      <value>application/json</value>
+                    </header>
+                  </requestHeader>
+                  <requestMethod>GET</requestMethod>
+                  <requestPath>/api/sgr/sgcp/load-management</requestPath>
+                  <responseQuery>
+                    <queryType>JMESPathExpression</queryType>
+                    <query>OpModeLoadCmd</query>
+                  </responseQuery>
+                </restApiReadServiceCall>
+                <restApiWriteServiceCall>
+                  <requestHeader>
+                    <header>
+                      <headerName>Accept</headerName>
+                      <value>application/json</value>
+                    </header>
+                  </requestHeader>
+                  <requestMethod>POST</requestMethod>
+                  <requestPath>/api/sgr/sgcp/load-management</requestPath>
+                  <requestQuery>
+                    <parameter>
+                      <name>OpModeLoadCmd</name>
+                      <value>[[value]]</value>
+                    </parameter>
+                  </requestQuery>
+                </restApiWriteServiceCall>
+              </restApiDataPointConfiguration>
+            </dataPointListElement>
+            <dataPointListElement>
+              <dataPoint>
+                <dataPointName>OpLoadState</dataPointName>
+                <dataDirection>R</dataDirection>
+                <dataType>
+                  <enum>
+                    <enumEntry>
+                      <literal>NORMAL</literal>
+                    </enumEntry>
+                    <enumEntry>
+                      <literal>REDUCED</literal>
+                    </enumEntry>
+                    <enumEntry>
+                      <literal>MAX</literal>
+                    </enumEntry>
+                    <enumEntry>
+                      <literal>LOCKED</literal>
+                    </enumEntry>
+                  </enum>
+                </dataType>
+                <unit>NONE</unit>
+                <legibleDescription>
+                  <textElement>Mode actually enforced by the load management</textElement>
+                  <language>en</language>
+                </legibleDescription>
+              </dataPoint>
+              <restApiDataPointConfiguration>
+                <dataType>JSON_string</dataType>
+                <restApiReadServiceCall>
+                  <requestHeader>
+                    <header>
+                      <headerName>Accept</headerName>
+                      <value>application/json</value>
+                    </header>
+                  </requestHeader>
+                  <requestMethod>GET</requestMethod>
+                  <requestPath>/api/sgr/sgcp/load-management</requestPath>
+                  <responseQuery>
+                    <queryType>JMESPathExpression</queryType>
+                    <query>OpLoadState</query>
+                  </responseQuery>
+                </restApiReadServiceCall>
+              </restApiDataPointConfiguration>
+            </dataPointListElement>
+          </dataPointList>
+        </functionalProfileListElement>
+        <functionalProfileListElement>
+          <functionalProfile>
+            <functionalProfileName>FlexMgmt</functionalProfileName>
+            <functionalProfileIdentification>
+              <specificationOwnerIdentification>0</specificationOwnerIdentification>
+              <functionalProfileCategory>SGCP</functionalProfileCategory>
+              <functionalProfileType>FlexMgmt</functionalProfileType>
+              <levelOfOperation>4m</levelOfOperation>
+              <versionNumber>
+                <primaryVersionNumber>1</primaryVersionNumber>
+                <secondaryVersionNumber>0</secondaryVersionNumber>
+                <subReleaseVersionNumber>0</subReleaseVersionNumber>
+              </versionNumber>
+            </functionalProfileIdentification>
+          </functionalProfile>
+          <dataPointList>
+            <dataPointListElement>
+              <dataPoint>
+                <dataPointName>GetSettings</dataPointName>
+                <dataDirection>R</dataDirection>
+                <dataType>
+                  <json />
+                </dataType>
+                <unit>NONE</unit>
+                <legibleDescription>
+                  <textElement>Static installation data (address, meter, flexibilities, WriteAccess, PVControl)</textElement>
+                  <language>en</language>
+                </legibleDescription>
+              </dataPoint>
+              <restApiDataPointConfiguration>
+                <dataType>JSON_object</dataType>
+                <restApiReadServiceCall>
+                  <requestHeader>
+                    <header>
+                      <headerName>Accept</headerName>
+                      <value>application/json</value>
+                    </header>
+                  </requestHeader>
+                  <requestMethod>GET</requestMethod>
+                  <requestPath>/api/sgr/sgcp/flex/settings</requestPath>
+                  <responseQuery>
+                    <queryType>JMESPathExpression</queryType>
+                    <query>@</query>
+                  </responseQuery>
+                </restApiReadServiceCall>
+              </restApiDataPointConfiguration>
+            </dataPointListElement>
+            <dataPointListElement>
+              <dataPoint>
+                <dataPointName>RestrictPower</dataPointName>
+                <dataDirection>W</dataDirection>
+                <dataType>
+                  <json />
+                </dataType>
+                <unit>NONE</unit>
+                <legibleDescription>
+                  <textElement>Time-limited allowed power range at the grid connection point (+ consumption, - feed-in)</textElement>
+                  <language>en</language>
+                </legibleDescription>
+              </dataPoint>
+              <restApiDataPointConfiguration>
+                <dataType>JSON_object</dataType>
+                <restApiWriteServiceCall>
+                  <requestHeader>
+                    <header>
+                      <headerName>Accept</headerName>
+                      <value>application/json</value>
+                    </header>
+                  </requestHeader>
+                  <requestMethod>POST</requestMethod>
+                  <requestPath>/api/sgr/sgcp/flex/restriction</requestPath>
+                  <requestQuery>
+                    <parameter>
+                      <name>RestrictPower</name>
+                      <value>[[value]]</value>
+                    </parameter>
+                  </requestQuery>
+                </restApiWriteServiceCall>
+              </restApiDataPointConfiguration>
+            </dataPointListElement>
+          </dataPointList>
+        </functionalProfileListElement>
+        <functionalProfileListElement>
+          <functionalProfile>
+            <functionalProfileName>ActivePowerAC</functionalProfileName>
+            <functionalProfileIdentification>
+              <specificationOwnerIdentification>0</specificationOwnerIdentification>
+              <functionalProfileCategory>Metering</functionalProfileCategory>
+              <functionalProfileType>ActivePowerAC</functionalProfileType>
+              <levelOfOperation>m</levelOfOperation>
+              <versionNumber>
+                <primaryVersionNumber>1</primaryVersionNumber>
+                <secondaryVersionNumber>1</secondaryVersionNumber>
+                <subReleaseVersionNumber>0</subReleaseVersionNumber>
+              </versionNumber>
+            </functionalProfileIdentification>
+          </functionalProfile>
+          <genericAttributeList>
+            <genericAttributeListElement>
+              <name>MeteringDirection</name>
+              <dataType>
+                <enum>
+                  <enumEntry>
+                    <literal>Net</literal>
+                  </enumEntry>
+                  <enumEntry>
+                    <literal>Import</literal>
+                  </enumEntry>
+                  <enumEntry>
+                    <literal>Export</literal>
+                  </enumEntry>
+                </enum>
+              </dataType>
+              <value>Net</value>
+              <unit>NONE</unit>
+            </genericAttributeListElement>
+            <genericAttributeListElement>
+              <name>MeteringTariffNr</name>
+              <dataType>
+                <int32 />
+              </dataType>
+              <value>0</value>
+              <unit>NONE</unit>
+            </genericAttributeListElement>
+          </genericAttributeList>
+          <dataPointList>
+            <dataPointListElement>
+              <dataPoint>
+                <dataPointName>ActivePowerACtot</dataPointName>
+                <dataDirection>R</dataDirection>
+                <dataType>
+                  <float64 />
+                </dataType>
+                <unit>KILOWATTS</unit>
+                <legibleDescription>
+                  <textElement>Net active power at the grid connection point (+ import, - export)</textElement>
+                  <language>en</language>
+                </legibleDescription>
+              </dataPoint>
+              <restApiDataPointConfiguration>
+                <dataType>JSON_number</dataType>
+                <restApiReadServiceCall>
+                  <requestHeader>
+                    <header>
+                      <headerName>Accept</headerName>
+                      <value>application/json</value>
+                    </header>
+                  </requestHeader>
+                  <requestMethod>GET</requestMethod>
+                  <requestPath>/api/sgr/sgcp/metering</requestPath>
+                  <responseQuery>
+                    <queryType>JMESPathExpression</queryType>
+                    <query>ActivePowerACtot</query>
+                  </responseQuery>
+                </restApiReadServiceCall>
+              </restApiDataPointConfiguration>
+            </dataPointListElement>
+          </dataPointList>
+        </functionalProfileListElement>
+      </functionalProfileList>
+    </restApiInterface>
+  </interfaceList>
+</DeviceFrame>

@@ -1,202 +1,178 @@
-# GRD Simulator — SmartGridReady
+# grd-smartgridready — a SmartGridready test bench for energy management systems
 
-A standalone, single-file tool that plays the role of a grid operator (FR:
-**GRD** — Gestionnaire de Réseau de Distribution; DE: **VNB** —
-Verteilnetzbetreiber; IT: **DSO** — Distributore di rete) and pushes
-[SmartGridReady](https://smartgridready.ch) grid signals over HTTP to any
-Energy Management System (EMS) that implements the webhook contract described
-below — then visualises the EMS's reactions and ACK/NACK responses live in an
-embedded web UI.
+`grd-sgr` tests an energy management system (EMS) the way SmartGridready
+defines it: through the **functional profiles** it declares and the **EID**
+(product description file) that maps them onto its real interface.
 
-No installation, no dependencies beyond the Python standard library, nothing
-installed on the target system. It's a pure external HTTP client — a
-black-box test harness for exercising an EMS's grid-signal handling (SG-Ready
-states, load shedding, dynamic tariffs, frequency events) without needing a
-real DSO connection.
+- It **validates the declarations** (EID, communicator declaration) against the
+  official schema and functional profile library.
+- It **acts as the grid operator's flexibility manager**: it drives the EMS
+  through its own EID with the **official SmartGridready CommHandler**
+  (`sgr-commhandler`), with no EMS-specific code. It checks reads, writes,
+  refusals, authentication, and whether commands take effect.
+- It **serves the VSE dynamic-tariff API** (v1, valid in 2026, and v2, from
+  2027, with OpenID Connect + PKCE and EMS linking), including bad days: DST
+  days, an unpublished day, holes, errors, garbage.
+- It **checks traceability** through a small evidence API (`sgr-evidence/1`).
+  SmartGridready standardises how a command is written, not how anyone later
+  proves what the EMS did with it; this API fills that gap.
 
-Originally built by [Teleia](https://www.casasmooth.com) to test
-**casasmooth**'s SGr grid-signal webhook, and released here as a free,
-reusable tool for anyone building or testing a SmartGridReady-compliant EMS.
+Every run produces a protocol in JSON, JUnit XML and Markdown. The Markdown
+report is laid out like the commissioning ("IBN") test sheet of the
+SmartGridready building label.
 
-![Python](https://img.shields.io/badge/python-3.8%2B-blue) ![License](https://img.shields.io/badge/license-MIT-green) ![Dependencies](https://img.shields.io/badge/dependencies-none-brightgreen)
+> **Not a certification.** Only the SmartGridready association declares
+> products, and "SmartGridready" is its name. This tool produces evidence that
+> a manufacturer, an installer or a grid operator can attach to a declaration or
+> use during commissioning. It is independent and not endorsed by the association.
 
-## Features
+![Python](https://img.shields.io/badge/python-3.10%2B-blue) ![License](https://img.shields.io/badge/license-MIT-green)
 
-- **Manual signal sending** — pick a signal type (SG-Ready state, load
-  shedding, dynamic tariff, grid frequency), a value, priority and TTL, and
-  send it with one click. 8 one-click presets for common scenarios.
-- **Automatic scenario player** — 5 built-in scripted scenarios (typical day,
-  evening peak ramp-up, sunny day with PV surplus, progressive load shedding,
-  fast-alternating stress test) that emit a sequence of signals on a timer,
-  looped or once.
-- **Live reaction timeline** — polls the target EMS's audit log and displays
-  what it did with each signal (applied / observed-only / deferred / not
-  applicable), plus the ACK/NACK callback if the EMS supports it.
-- **Multilingual** — UI and event log available in French, English, German
-  and Italian (`--lang fr|en|de|it`).
-- **Zero dependencies** — pure Python 3.8+ standard library
-  (`http.server`, `urllib`, `threading`, `json`). Nothing to `pip install`.
+## Install
+
+```bash
+pip install "git+https://github.com/chrohrbach/grd-smartgridready"
+# or, from a clone:
+pip install -e ".[dev]"
+```
+
+The official SmartGridready specification (XSD, functional profiles, generic
+attributes, dynamic-tariff OpenAPI) is **vendored** in `src/grd_sgr/spec/`,
+pinned to one upstream commit (see `spec/SOURCE.md`), so a verdict is
+reproducible offline.
 
 ## Quick start
 
+**1. Check the declarations** (no EMS needed):
+
 ```bash
-python3 grd_simulator.py --target http://<ems-host>:<port> --token <sgr_webhook_token> --port 8770 --lang en
+grd-sgr validate examples/casasmooth_grid_interface_rest.xml --out reports/
 ```
 
-Then open **http://localhost:8770** in a browser.
+**2. Drive the EMS as a flexibility manager.** Read-only by default:
 
-| Flag | Default | Description |
+```bash
+export SGR_TOKEN=...                      # the credential the EID asks for
+grd-sgr run my_ems_eid.xml \
+  --prop base_uri=http://ems.local:28100 --prop api_key=env:SGR_TOKEN \
+  --evidence-url http://ems.local:28100/api/sgr/evidence \
+  --evidence-header "Authorization: Bearer env:SGR_TOKEN" \
+  --out reports/
+```
+
+Add `--allow-write` to run the protocol write tests. They send valid, invalid
+and unauthenticated commands, then restore what they found. Add
+`--functional` to hold each mode long enough to judge its effect, and
+`--meter-eid` plus `--meter-point` to judge that effect against an independent
+reference meter at the grid connection point. Writes command a real building,
+and every test ends by writing the released state (NORMAL, neutral
+restriction).
+
+**3. Serve dynamic tariffs** and point the EMS at them:
+
+```bash
+grd-sgr tariff-server --port 8771 --scenario dst_spring      # interactive
+grd-sgr tariff-run --scenarios normal,dst_spring,http_500 --dwell 600 \
+  --evidence-url http://ems.local:28100/api/sgr/evidence --out reports/
+```
+
+`grd-sgr list-tests` prints the catalogue.
+
+## What is tested, and what cannot be
+
+| Family | What | Testability |
 |---|---|---|
-| `--target` | `http://192.168.68.149:28100` | Base URL of the target EMS API |
-| `--token` | *(empty)* | Bearer token for sending/cancelling signals (GET endpoints are public) |
-| `--port` | `8770` | Port for this simulator's own web UI |
-| `--public-url` | auto-detected LAN IP | Reachable URL of this simulator, used for the EMS's ACK/NACK callback |
-| `--poll-interval` | `10.0` | Seconds between polls of the target EMS |
-| `--lang` | `fr` | UI + event-log language: `fr`, `en`, `de`, `it` |
+| **S** | Declarations: XSD, profiles exist, are published and have coherent levels, data points, criteria attributes, executable transport | A, software |
+| **P** | SGCP protocol through the CommHandler: connect, read, write/read-back, invalid values, idempotence, authentication | A |
+| **F** | Effect of LOCKED / REDUCED / MAX and of RestrictPower at the connection point | B, needs a reference meter |
+| **T** | The EMS as a client of the VSE tariff API (requests, parsing v1/v2, DST, errors, OIDC) | A (T6 optimisation: C) |
+| **E** | Traceability of every command, from receipt to decision | A, needs the evidence API |
 
-You can also change the target URL, token and public URL live from the UI
-("EMS target" panel → Save & reconnect) without restarting.
+Testability: **A** software only · **B** needs a hardware bench (relays, reference
+meter, real loads) · **C** only over time, in operation · **D** not objectifiable.
 
-Note: most EMS implementations (including casasmooth) evaluate SGr rules on a
-periodic cycle (e.g. every 5 minutes), so device reactions and the ACK/NACK
-callback can take a while to appear after you send a signal. The simulator
-keeps polling and streams them into the timeline as they arrive.
+Verdicts are never inferred from silence:
 
-## The HTTP contract
-
-This tool is a client for a specific webhook contract, originally designed
-for casasmooth's SGr integration. Any EMS that implements these five
-endpoints can be tested with this simulator.
-
-### 1. Send a grid signal
-
-```
-POST {target}/api/sgr/grid-signal
-Authorization: Bearer <token>
-Content-Type: application/json
-
-{
-  "signal_type": "sg_ready",          // "sg_ready" | "load_reduction" | "tariff" | "frequency"
-  "value": 4,                          // SG-Ready state 1-4, kW cap, CHF/kWh, or Hz
-  "source": "grd-simulator",           // free text, identifies the sender
-  "duration_seconds": 3600,            // TTL, clamped 60..86400 (1 min .. 24 h) by the EMS
-  "priority": 75,                      // 0-100, highest priority wins among concurrent signals
-  "reason": "Solar oversupply",        // optional, free text
-  "callback_url": "http://<sim-host>:8770/api/callback?corr=<id>"  // optional, ACK/NACK sink
-}
-```
-
-Response (`200`):
-```json
-{
-  "status": "accepted",
-  "signal_id": "a1b2c3d4e5f6",
-  "signal_type": "sg_ready",
-  "value": 4,
-  "expires_at": "2026-07-06T12:00:00+00:00",
-  "expires_in_seconds": 3600,
-  "active_signal_count": 2,
-  "immediate_evaluation": true
-}
-```
-
-SG-Ready states follow the standard 2-bit convention:
-
-| State | Meaning |
+| Verdict | Meaning |
 |---|---|
-| 1 | EVU lock-out — forced stop (max 2 h/day) |
-| 2 | Reduced operation (energy saving) |
-| 3 | Recommended / normal operation |
-| 4 | Forced start (surplus / oversupply) |
+| `PASS` | Compared against a stated reference and matched. |
+| `FAIL` | Compared and did not match. |
+| `INCONCLUSIVE` | The specification or the declaration gives no criterion, or the EMS says, in its journal, that it deliberately did not act (for example MinimumRunTime, or observe-only). |
+| `N/A` | The EMS does not declare what the test needs. |
+| `HARDWARE_REQUIRED` | The protocol side passed; the physical effect needs a reference meter or an I/O bench. |
+| `SKIPPED` | Deliberately not run (writes not allowed, functional tests not requested). |
+| `ERROR` | The tool itself failed; this says nothing about the EMS. |
 
-### 2. Cancel signal(s)
+Full catalogue, with the clause each test checks: [docs/TEST_CATALOGUE.md](docs/TEST_CATALOGUE.md).
 
+## What an EMS must provide to be testable
+
+1. **An EID** of its grid-facing interface: category SGCP, the published
+   profiles it implements (`UniDirFlexLoadMgmt` 2m, `FlexMgmt` 4m…), and the
+   generic attributes the profile texts ask to declare (`Curtailment`,
+   `MinimumLoad`, `MaximumLockTime`…). Without these a functional test has no
+   number to compare against. `examples/casasmooth_grid_interface_rest.xml`
+   is a complete, schema-valid example.
+2. **An interface the reference CommHandler can execute.** In sgr-commhandler
+   0.5.x this means `NoSecurityScheme`, `BasicSecurityScheme` or
+   `BearerSecurityScheme`; `ApiKeySecurityScheme` is rejected. Carry written
+   values in `requestQuery`, `requestForm` or `requestPath`: up to 0.5.2, the
+   CommHandler never sends the `requestBody` of a data point call. S6 flags
+   both.
+3. **Optionally, but for the E and F families in practice, the evidence API**
+   `sgr-evidence/1`: two read-only endpoints (`/status`, `/events`) returning
+   a journal of received commands, decisions and device commands, correlated
+   by an id. Contract: [docs/EVIDENCE_API.md](docs/EVIDENCE_API.md).
+
+## Known limitations of the reference CommHandler
+
+The bench uses `sgr-commhandler` as it is, because that is what a real
+communicator uses; where it misbehaves, the bench says so instead of working
+around it silently:
+
+- **Authentication failures are silent.** It "connects" even when Bearer
+  authentication fails; it only logs the failure. P1 therefore proves the
+  connection with a first read and reports the CommHandler's log lines.
+- **Write bodies are dropped.** The `requestBody` of a data point write call
+  is never sent (up to 0.5.2).
+- **API keys are unsupported.** `ApiKeySecurityScheme` raises "unsupported
+  authentication method".
+- **Reads are cached.** REST reads are cached for 5 s, so the bench always
+  reads with `skip_cache`.
+
+Defects found in the specification itself are pinned by `tests/test_spec_library.py`
+(for example, the JSON Schema embedded in FlexMgmt 4m GetSettings is not valid
+JSON upstream).
+
+## The legacy webhook harness
+
+Version 1.0.0 of this repository was a web UI pushing signals to casasmooth's
+proprietary grid-signal webhook. That is not SmartGridready communication. It
+is kept, stdlib only and with its SG-Ready states corrected to the BWP
+definition, for existing users:
+
+```bash
+python grd_simulator.py --target http://ems.local:28100 --token ...   # or: grd-sgr simulator ...
 ```
-DELETE {target}/api/sgr/grid-signal?signal_id=<id>   # cancel one
-DELETE {target}/api/sgr/grid-signal                   # cancel all
-Authorization: Bearer <token>
+
+It now listens on 127.0.0.1 only unless `--expose` is given, and protects its
+own endpoints with a token. Contract: [docs/LEGACY_WEBHOOK.md](docs/LEGACY_WEBHOOK.md).
+
+## Development
+
+```bash
+pip install -e ".[dev]"
+ruff check src tests
+pytest
 ```
 
-### 3. Read active signals (public, no auth)
+The test suite includes a reference EMS (`tests/fake_ems.py`) that speaks the
+example EID's contract. It has one switch per defect the bench must catch, and
+the end-to-end tests drive it through the real CommHandler.
 
-```
-GET {target}/api/sgr/grid-signal
-```
-Returns the winning (highest-priority) signal plus the full list of active
-signals (`all_signals`).
+## License
 
-### 4. Read the audit log (public, no auth)
-
-```
-GET {target}/api/sgr/audit?limit=8
-```
-Returns recent rule-evaluation cycles: `apply_enabled` (whether the EMS is in
-observe-only mode), `actions_taken` / `actions_skipped` (with reasons like
-`hysteresis`, `already_set`, `hard_constraint`), and the evaluation `context`
-(spot price, PV power, grid signal state, etc). This is what the simulator
-polls to build its reaction timeline.
-
-### 5. Read claimed devices (public, no auth)
-
-```
-GET {target}/api/sgr/claims
-```
-Returns the list of devices the EMS's SGr layer currently controls.
-
-### 6. ACK/NACK callback (EMS → simulator)
-
-If a `callback_url` was provided when sending the signal, the EMS should
-`POST` back to it after evaluating the signal:
-
-```json
-{
-  "signal_id": "a1b2c3d4e5f6",
-  "status": "applied",           // "applied" | "observed_only" | "deferred" | "received_not_applied"
-  "considered": true,             // a device rule reacted to the signal
-  "applied": true,                // a command was actually written to a device
-  "apply_enabled": true,          // whether the EMS's master switch is on
-  "detail": "commande appliquée aux devices SGr",
-  "actions": [{"rule": "PAC virtuelle/SG-ReadyStates/SGReadyState", "value": 4}],
-  "timestamp": "2026-07-06T12:00:05+00:00"
-}
-```
-
-| status | meaning |
-|---|---|
-| `applied` | Considered AND a command was sent to a device. |
-| `observed_only` | Considered, but the EMS is in observe-only mode (master switch off) — nothing was sent. |
-| `deferred` | Considered, but held back (hysteresis / already at target value). |
-| `received_not_applied` | No device rule cares about this signal. |
-
-The simulator's callback sink is at `{public_url}/api/callback?corr=<id>` and
-accepts this payload (best-effort, no auth required — it's a local test
-tool, not exposed to the internet by design).
-
-## Architecture
-
-Single file, ~1150 lines, stdlib only:
-
-- `SimState` — thread-safe in-memory state (target/token config, event log,
-  sent signals, automatic-scenario player state).
-- A background poller thread hits the target's `audit`/`claims`/`grid-signal`
-  GET endpoints every `--poll-interval` seconds and turns new audit entries
-  into timeline events.
-- A background auto-scenario thread drives the scripted scenarios.
-- `Handler` (`http.server.BaseHTTPRequestHandler`) serves the embedded
-  single-page UI plus a small JSON API (`/api/send`, `/api/cancel`,
-  `/api/config`, `/api/auto/start`, `/api/auto/stop`, `/api/callback`).
-- All user-facing text (Python event-log strings + the embedded HTML/JS UI)
-  is resolved once at startup from language dictionaries (`--lang`); there is
-  no in-browser language switch because the event log itself is rendered
-  server-side in plain text at the moment each event happens.
-
-## Attribution & license
-
-Originally written by **Teleia SaRL** for **casasmooth**
-(https://www.casasmooth.com), and released here under the MIT License — see
-[LICENSE](LICENSE). Contributions welcome.
-
-The SmartGridReady name and logo motif are property of the
-[SmartGridReady association](https://smartgridready.ch); the badge rendered
-in the UI is a simple stylised representation for demonstration only, not an
-official logo.
+MIT, see [LICENSE](LICENSE). The vendored SmartGridready specification in
+`src/grd_sgr/spec/` keeps its BSD 3-Clause licence
+(`spec/LICENSE-SmartGridready.txt`, Copyright (c) 2023, SmartgridReady).
+Originally written by Teleia SaRL for casasmooth (https://www.casasmooth.com).

@@ -4,3 +4,16 @@ __pycache__/
 .DS_Store
 .vscode/
 .idea/
+
+# packaging
+build/
+dist/
+*.egg-info/
+
+# tools
+.pytest_cache/
+.ruff_cache/
+.venv/
+
+# test reports written by `grd-sgr ... --out`
+reports/

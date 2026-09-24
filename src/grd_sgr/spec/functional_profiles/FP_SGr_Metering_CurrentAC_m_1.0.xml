@@ -1,0 +1,153 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<?xml-stylesheet type="text/xsl" href="/xsl/SGr.xsl"?>
+<FunctionalProfileFrame xmlns="http://www.smartgridready.com/ns/V0/"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xsi:schemaLocation="http://www.smartgridready.com/ns/V0/ ../../SchemaDatabase/SGr/SGrIncluder.xsd">
+  <releaseNotes>
+    <state>Published</state>
+    <changeLog>
+      <version>0.1.1</version>
+      <date>2021-04-03</date>
+      <author>IBT/cb</author>
+      <comment>Vorbereitung beta test</comment>
+    </changeLog>
+    <changeLog>
+      <version>1.0.0</version>
+      <date>2023-04-21</date>
+      <author>SGr/sz</author>
+      <comment>Finalisierung</comment>
+    </changeLog>
+  </releaseNotes>
+  <functionalProfile>
+    <functionalProfileIdentification>
+      <specificationOwnerIdentification>0</specificationOwnerIdentification>
+      <functionalProfileCategory>Metering</functionalProfileCategory>
+      <functionalProfileType>CurrentAC</functionalProfileType>
+      <levelOfOperation>m</levelOfOperation>
+      <versionNumber>
+        <primaryVersionNumber>1</primaryVersionNumber>
+        <secondaryVersionNumber>0</secondaryVersionNumber>
+        <subReleaseVersionNumber>0</subReleaseVersionNumber>
+      </versionNumber>
+    </functionalProfileIdentification>
+    <legibleDescription>
+      <textElement>
+        <![CDATA[
+          <img src="ressources/fp_product_to_ems.svg" style="float:left; padding:0.3em;"/>
+          <strong>Messung der Stromstärke</strong><br>
+          Monitoring Funktionsprofil für Stromerzeuger und Stromverbraucher zur Kontrolle der Systemlast und/oder für regeltechnische
+          Zwecke.
+
+          <p>Dieses Funktionsprofil erlaubt sowohl die Messung der Stromstärke auf einer Phase wie auch auf drei Phasen.
+            Eine der folgenden Varianten muss bei der Implementierung des Funktionsprofiles umgesetzt werden:
+          <ul>
+            <li>Einphasige Geräte geben die Stromstärke über die erste Phase an (CurrentAC1)</li>
+            <li>3-phasige Geräte geben die Stromstärke pro Phase an (CurrentAC1, CurrentAC2, CurrentAC3)</li>
+          </ul>
+          </p>
+
+          <p>Die Implementierung der Messung der Stromstärke auf dem Nulleiter (CurrentACN) ist optional möglich.</p>
+        ]]>
+      </textElement>
+      <language>de</language>
+    </legibleDescription>
+    <legibleDescription>
+      <textElement>
+        <![CDATA[
+          <img src="ressources/fp_product_to_ems.svg" style="float:left; padding:0.3em;"/>
+          <strong>Current measurement</strong><br>
+          Monitoring functional profile for power generators and consumers for reflecting the current.
+
+          <p>This functional profile allows measurement of the current on a single phase of three phases.
+            One of the following approaches must be applied when implementing the functional profile:
+          <ul>
+            <li>Single-phase devices use the total current with the first data point (CurrentAC1)</li>
+            <li>Three-phase devices give the current per phase  using three data points (ActivePowerACL1, ActivePowerACL2, ActivePowerACL3)</li>
+          </ul>
+          </p>
+
+          <p>The implementation of a data point measuring the current on the neutral conductor is optional (via data point CurrentACN).</p>
+        ]]>
+      </textElement>
+      <language>en</language>
+    </legibleDescription>
+  </functionalProfile>
+  <dataPointList>
+    <dataPointListElement>
+      <dataPoint>
+        <dataPointName>CurrentACL1</dataPointName>
+        <dataDirection>R</dataDirection>
+        <presenceLevel>M</presenceLevel>
+        <dataType>
+          <float64 />
+        </dataType>
+        <unit>AMPERES</unit>
+        <legibleDescription>
+          <textElement>Erfassung des Stromes in Phase 1</textElement>
+          <language>de</language>
+        </legibleDescription>
+        <legibleDescription>
+          <textElement>Current measurement of phase 1</textElement>
+          <language>en</language>
+        </legibleDescription>
+      </dataPoint>
+    </dataPointListElement>
+    <dataPointListElement>
+      <dataPoint>
+        <dataPointName>CurrentACL2</dataPointName>
+        <dataDirection>R</dataDirection>
+        <presenceLevel>R</presenceLevel>
+        <dataType>
+          <float64 />
+        </dataType>
+        <unit>AMPERES</unit>
+        <legibleDescription>
+          <textElement>Erfassung des Stromes in Phase 2</textElement>
+          <language>de</language>
+        </legibleDescription>
+        <legibleDescription>
+          <textElement>Current measurement of phase 2</textElement>
+          <language>en</language>
+        </legibleDescription>
+      </dataPoint>
+    </dataPointListElement>
+    <dataPointListElement>
+      <dataPoint>
+        <dataPointName>CurrentACL3</dataPointName>
+        <dataDirection>R</dataDirection>
+        <presenceLevel>R</presenceLevel>
+        <dataType>
+          <float64 />
+        </dataType>
+        <unit>AMPERES</unit>
+        <legibleDescription>
+          <textElement>Erfassung des Stromes in Phase 3</textElement>
+          <language>de</language>
+        </legibleDescription>
+        <legibleDescription>
+          <textElement>Current measurement of phase 3</textElement>
+          <language>en</language>
+        </legibleDescription>
+      </dataPoint>
+    </dataPointListElement>
+    <dataPointListElement>
+      <dataPoint>
+        <dataPointName>CurrentACN</dataPointName>
+        <dataDirection>R</dataDirection>
+        <presenceLevel>O</presenceLevel>
+        <dataType>
+          <float64 />
+        </dataType>
+        <unit>AMPERES</unit>
+        <legibleDescription>
+          <textElement>Erfassung des Stromes im Nullleiter</textElement>
+          <language>de</language>
+        </legibleDescription>
+        <legibleDescription>
+          <textElement>Current measurement of neutral conductor</textElement>
+          <language>en</language>
+        </legibleDescription>
+      </dataPoint>
+    </dataPointListElement>
+  </dataPointList>
+</FunctionalProfileFrame>
