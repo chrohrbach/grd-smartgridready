@@ -14,7 +14,7 @@ import itertools
 import json
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from aiohttp import web
@@ -30,6 +30,9 @@ class Misbehaviour:
     no_evidence: bool = False  # evidence API answers 401, nothing is journalled
     state_lags: bool = False  # OpLoadState never follows the command, and nothing says why
     settings_missing_field: bool = False  # GetSettings without MeterNumber
+    no_decisions: bool = False  # journals commands but never a decision
+    device_fails: bool = False  # device commands journalled as failed
+    excuses_everything: bool = False  # "not_enforceable" for every command while applying
 
 
 @dataclass
@@ -41,6 +44,8 @@ class FakeEms:
     applying: bool = True  # False: observe-only, apply_enabled = false
     nothing_to_act_on: bool = False  # received, no device reacts (received_not_applied)
     reaction_time_s: float = 1.0
+    clock_offset_s: float = 0.0  # this EMS's clock minus the real one
+    page_cap: int = 5000  # the most events /events returns at once
     cmd: str = "NORMAL"
     state: str = "NORMAL"
     restriction: dict[str, Any] | None = None
@@ -72,9 +77,15 @@ class FakeEms:
     def event(self, kind: str, **fields: Any) -> None:
         if self.bad.no_evidence:
             return
-        self.events.append({"seq": next(self._seq),
-                            "ts": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
-                            "kind": kind, **fields})
+        if kind == "decision" and self.bad.no_decisions:
+            return
+        if kind == "device_command" and self.bad.device_fails:
+            fields = {**fields, "result": "failed", "reason": "Modbus timeout"}
+        self.events.append({"seq": next(self._seq), "ts": self._now_iso(), "kind": kind, **fields})
+
+    def _now_iso(self) -> str:
+        now = datetime.now(timezone.utc) + timedelta(seconds=self.clock_offset_s)
+        return now.isoformat(timespec="milliseconds")
 
     def correlation(self) -> str:
         return f"fake-{next(self._corr)}"
@@ -115,7 +126,10 @@ class FakeEms:
             return web.json_response({"detail": "invalid literal"}, status=422)
         self.event("external_command", correlation_id=corr, fp=fp, dp=dp, value=mode, result="accepted")
         self.cmd = mode
-        if self.bad.state_lags:
+        if self.bad.excuses_everything and mode != "NORMAL":
+            self.event("decision", correlation_id=corr, fp=fp, result="not_enforceable",
+                       reason="not today")
+        elif self.bad.state_lags:
             self.event("decision", correlation_id=corr, fp=fp, result="activated")
         elif mode in RESTRICTIVE and self.defer_restrictions:
             self.event("decision", correlation_id=corr, fp=fp, result="deferred",
@@ -184,7 +198,7 @@ class FakeEms:
     async def ev_status(self, request: web.Request) -> web.Response:
         if not self._authorized(request) or self.bad.no_evidence:
             return self._unauthorized()
-        return web.json_response({"api": "sgr-evidence/1",
+        return web.json_response({"api": "sgr-evidence/1", "clock_utc": self._now_iso(),
                                   "last_seq": self.events[-1]["seq"] if self.events else 0,
                                   "declared": {"reaction_time_s": self.reaction_time_s},
                                   "apply_enabled": self.applying,
@@ -194,7 +208,7 @@ class FakeEms:
         if not self._authorized(request) or self.bad.no_evidence:
             return self._unauthorized()
         after = int(request.query.get("after_seq", "0"))
-        limit = int(request.query.get("limit", "500"))
+        limit = min(int(request.query.get("limit", "500")), self.page_cap)
         return web.json_response({"api": "sgr-evidence/1",
                                   "events": [e for e in self.events if e["seq"] > after][:limit]})
 

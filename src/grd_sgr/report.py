@@ -30,8 +30,9 @@ FAMILY_TITLES = {
 }
 
 
-def run_metadata(subject: dict[str, Any]) -> dict[str, Any]:
+def run_metadata(subject: dict[str, Any], effect_note: str | None = None) -> dict[str, Any]:
     return {
+        "effect_note": effect_note,
         "tool": "grd-smartgridready",
         "tool_version": __version__,
         "sgr_specification_commit": SPEC_COMMIT,
@@ -93,6 +94,7 @@ def render_markdown(results: list[Result], meta: dict[str, Any]) -> str:
         f"- Generated (UTC): {meta['generated_utc']}",
         f"- Overall: **{(overall or Verdict.INCONCLUSIVE).value}** — "
         + ", ".join(f"{k} {v}" for k, v in sorted(summarize(results).items())),
+        *([f"- Note: {meta['effect_note']}."] if meta.get("effect_note") else []),
         "",
         "> This protocol is evidence produced by an independent test tool. It is not a",
         "> SmartGridready declaration: only the SmartGridready association declares products.",

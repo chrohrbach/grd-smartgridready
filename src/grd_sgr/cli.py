@@ -17,10 +17,20 @@ import asyncio
 import json
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
-from .framework import REGISTRY, Result, Verdict, overall_verdict, summarize, utc_now_iso
+from .framework import (
+    REGISTRY,
+    Result,
+    Verdict,
+    effect_note,
+    overall_verdict,
+    summarize,
+    utc_now_iso,
+)
+from .redact import Redactor
 
 VERDICT_MARK = {
     "PASS": "PASS", "FAIL": "FAIL", "INCONCLUSIVE": "INCONCL", "N/A": "N/A",
@@ -31,6 +41,13 @@ VERDICT_MARK = {
 def parse_props(pairs: list[str], files: list[str]) -> dict[str, str]:
     """``key=value`` pairs; ``value`` may be ``env:NAME`` so secrets stay out of
     the shell history and of the report."""
+    return parse_props_and_secrets(pairs, files)[0]
+
+
+def parse_props_and_secrets(pairs: list[str], files: list[str]) -> tuple[dict[str, str], set[str]]:
+    """The properties, and the values that came from the environment (secrets
+    by the operator's own choice: masked in every output)."""
+    secrets: set[str] = set()
     props: dict[str, str] = {}
     for f in files or []:
         props.update({k: str(v) for k, v in json.loads(Path(f).read_text(encoding="utf-8")).items()})
@@ -45,7 +62,8 @@ def parse_props(pairs: list[str], files: list[str]) -> dict[str, str]:
             if name not in os.environ:
                 raise SystemExit(f"--prop {key}: environment variable {name} is not set")
             props[key] = os.environ[name]
-    return props
+            secrets.add(props[key])
+    return props, secrets
 
 
 def parse_headers(items: list[str]) -> dict[str, str]:
@@ -55,16 +73,20 @@ def parse_headers(items: list[str]) -> dict[str, str]:
             raise SystemExit(f"--evidence-header expects 'Name: value', got {item!r}")
         name, value = item.split(":", 1)
         value = value.strip()
+        var = value[4:] if value.startswith("env:") else value.split(" env:", 1)[1] if " env:" in value else None
+        if var is not None and var not in os.environ:
+            # An empty credential would make the EMS answer 401, reported as an
+            # EMS failure: refuse to start instead.
+            raise SystemExit(f"--evidence-header {name.strip()}: environment variable {var} is not set")
         if value.startswith("env:"):
-            value = os.environ.get(value[4:], "")
-        elif " env:" in value:
-            prefix, var = value.split(" env:", 1)
-            value = f"{prefix} {os.environ.get(var, '')}"
+            value = os.environ[var]
+        elif var is not None:
+            value = f"{value.split(' env:', 1)[0]} {os.environ[var]}"
         out[name.strip()] = value
     return out
 
 
-def print_results(results: list[Result]) -> None:
+def print_results(results: list[Result], note: str | None = None) -> None:
     width = max((len(r.subject) for r in results), default=10)
     width = min(max(width, 10), 60)
     for r in results:
@@ -76,14 +98,22 @@ def print_results(results: list[Result]) -> None:
     counts = ", ".join(f"{k} {v}" for k, v in sorted(summarize(results).items()))
     overall = overall_verdict(results)
     print(f"\n  overall: {(overall or Verdict.INCONCLUSIVE).value} ({counts})")
+    if note:
+        print(f"  note: {note}")
 
 
-def finish(results: list[Result], subject: dict[str, Any], out: str | None) -> int:
+def finish(results: list[Result], subject: dict[str, Any], out: str | None,
+           redactor: Redactor | None = None) -> int:
+    """Print and write the results — after masking every credential."""
     from .report import run_metadata, write_all
 
-    print_results(results)
+    redactor = redactor or Redactor()
+    results = redactor.results(results)
+    subject = redactor.value(subject)
+    note = effect_note(results)
+    print_results(results, note)
     if out:
-        paths = write_all(results, run_metadata(subject), Path(out))
+        paths = write_all(results, run_metadata(subject, note), Path(out))
         print("  reports: " + ", ".join(str(p) for p in paths.values()))
     return 1 if overall_verdict(results) == Verdict.FAIL else 0
 
@@ -104,25 +134,41 @@ def cmd_validate(args: argparse.Namespace) -> int:
 
 
 def cmd_run(args: argparse.Namespace) -> int:
-    from .client import RawRestCaller, SgrDevice, instantiate_text
+    from .client import (
+        RawRestCaller,
+        SgrDevice,
+        describe_error,
+        instantiate_text,
+        resolve_properties,
+        secret_values,
+    )
     from .eid import parse_eid
     from .evidence import EvidenceClient
     from .runner import run_dynamic, run_static
     from .tests_dynamic import DynamicContext
 
     path = Path(args.eid)
-    props = parse_props(args.prop, args.props)
+    props, env_secrets = parse_props_and_secrets(args.prop, args.props)
     only = set(args.only.split(",")) if args.only else None
     results = run_static(path, args.communicator, only)
-    eid = parse_eid(instantiate_text(path.read_text(encoding="utf-8"), props))
+    raw_text = path.read_text(encoding="utf-8")
+    # The configuration the CommHandler will use: given values + declared
+    # defaults (a generic attribute such as {{minimum_load_kw}} must not stay a
+    # placeholder here while the EMS enforces its default).
+    eid = parse_eid(instantiate_text(raw_text, resolve_properties(raw_text, props)))
     raw = RawRestCaller(path, props) if eid.interface_type == "rest" else None
+    redactor = Redactor(env_secrets | secret_values(raw_text, props))
     evidence = None
     if args.evidence_url:
-        evidence = EvidenceClient(args.evidence_url, parse_headers(args.evidence_header))
+        headers = parse_headers(args.evidence_header)
+        redactor.add(*headers.values())
+        evidence = EvidenceClient(args.evidence_url, headers)
     meter = None
     meter_point = None
     if args.meter_eid:
-        meter = SgrDevice(args.meter_eid, parse_props(args.meter_prop, args.meter_props))
+        meter_props, meter_secrets = parse_props_and_secrets(args.meter_prop, args.meter_props)
+        redactor.add(*meter_secrets)
+        meter = SgrDevice(args.meter_eid, meter_props)
         if not args.meter_point or "." not in args.meter_point:
             raise SystemExit("--meter-point FP.DP is required with --meter-eid")
         meter_point = tuple(args.meter_point.split(".", 1))
@@ -135,7 +181,14 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     async def go() -> list[Result]:
         if meter is not None:
+            # A reference meter that cannot be read would make every effect
+            # unjudgeable — or, worse, silently judged on nothing: refuse now.
             await meter.connect()
+            try:
+                float(await meter.read(*meter_point))
+            except Exception as exc:
+                raise SystemExit(f"reference meter {'.'.join(meter_point)} unreadable: "
+                                 f"{describe_error(exc)} — refusing to judge effects with it") from None
         return await run_dynamic(ctx, only)
 
     print(f"grd-sgr run {path.name} — started {utc_now_iso()}"
@@ -143,7 +196,9 @@ def cmd_run(args: argparse.Namespace) -> int:
     results += asyncio.run(go())
     subject = {"device_name": eid.device_name, "manufacturer": eid.manufacturer, "eid": path.name,
                "base_uri": props.get("base_uri", "")}
-    return finish(results, subject, args.out)
+    if raw is not None:
+        redactor.add(*raw.secrets)
+    return finish(results, subject, args.out, redactor)
 
 
 def cmd_tariff_server(args: argparse.Namespace) -> int:
@@ -156,7 +211,7 @@ def cmd_tariff_server(args: argparse.Namespace) -> int:
 def cmd_tariff_run(args: argparse.Namespace) -> int:
     from aiohttp import web
 
-    from .evidence import EvidenceClient
+    from .evidence import EvidenceClient, offset_from_status
     from .runner import TariffRunContext, run_tariff_tests
     from .tariff_server import SCENARIOS, TariffServer
 
@@ -165,7 +220,13 @@ def cmd_tariff_run(args: argparse.Namespace) -> int:
         if s not in SCENARIOS:
             raise SystemExit(f"unknown scenario {s!r}; choose from {', '.join(SCENARIOS)}")
     server = TariffServer(scenario=scenarios[0])
-    evidence = EvidenceClient(args.evidence_url, parse_headers(args.evidence_header)) if args.evidence_url else None
+    redactor = Redactor()
+    evidence = None
+    if args.evidence_url:
+        headers = parse_headers(args.evidence_header)
+        redactor.add(*headers.values())
+        evidence = EvidenceClient(args.evidence_url, headers)
+    offset = {"s": 0.0}
 
     async def go():
         runner = web.AppRunner(server.app())
@@ -173,7 +234,10 @@ def cmd_tariff_run(args: argparse.Namespace) -> int:
         await web.TCPSite(runner, args.host, args.port).start()
         start_seq = 0
         if evidence is not None:
-            start_seq = int((await evidence.status()).get("last_seq") or 0)
+            t0 = time.time()
+            status = await evidence.status()
+            start_seq = int(status.get("last_seq") or 0)
+            offset["s"] = offset_from_status(status, (t0 + time.time()) / 2) or 0.0
         timeline = []
         try:
             for s in scenarios:
@@ -184,13 +248,13 @@ def cmd_tariff_run(args: argparse.Namespace) -> int:
                 timeline.append((s, begin, utc_now_iso()))
         finally:
             await runner.cleanup()
-        events = await evidence.events(after_seq=start_seq, limit=5000) if evidence is not None else None
+        events = await evidence.all_events(after_seq=start_seq) if evidence is not None else None
         return timeline, events
 
     timeline, events = asyncio.run(go())
-    ctx = TariffRunContext(server.request_log(), timeline, events, server.oidc)
+    ctx = TariffRunContext(server.request_log(), timeline, events, server.oidc, offset["s"])
     results = run_tariff_tests(ctx)
-    return finish(results, {"device_name": "EMS under test", "eid": "(tariff client)"}, args.out)
+    return finish(results, {"device_name": "EMS under test", "eid": "(tariff client)"}, args.out, redactor)
 
 
 def cmd_list(args: argparse.Namespace) -> int:

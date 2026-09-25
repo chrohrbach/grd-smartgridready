@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import time
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
 from . import tests_dynamic, tests_static, tests_tariff  # noqa: F401 - registers the tests
+from .client import describe_error
 from .eid import parse_eid
+from .evidence import offset_from_status
 from .framework import REGISTRY, Finding, Result, Stopwatch, Verdict
 
 STATIC_ORDER = ("S1", "S2", "S3", "S4", "S5", "S6")
@@ -40,7 +43,7 @@ def run_static(eid_path: Path, communicator: str | None = None,
         try:
             produced = case.func(case, ctx)
         except Exception as exc:  # a crash of the tool says nothing about the EMS
-            produced = [case.result(Verdict.ERROR, eid_path.name, findings=[Finding("error", repr(exc))])]
+            produced = [case.result(Verdict.ERROR, eid_path.name, findings=[Finding("error", describe_error(exc))])]
         for r in produced:
             r.duration_s = r.duration_s or sw.elapsed()
         results.extend(produced)
@@ -51,11 +54,15 @@ async def run_dynamic(ctx: tests_dynamic.DynamicContext, only: set[str] | None =
     results: list[Result] = []
     if ctx.evidence is not None:
         try:
+            t0 = time.time()
             ctx.evidence_status = await ctx.evidence.status()
             ctx.evidence_start_seq = int(ctx.evidence_status.get("last_seq") or 0)
+            # The EMS clock against this one, so journal timestamps can be
+            # compared with the tool's (E4) whatever the skew.
+            ctx.clock_offset_s = offset_from_status(ctx.evidence_status, (t0 + time.time()) / 2) or 0.0
         except Exception as exc:
             results.append(REGISTRY["E4"].result(Verdict.FAIL, "evidence API", findings=[Finding(
-                "error", f"evidence API unreachable or not sgr-evidence/1: {exc!r}")]))
+                "error", f"evidence API unreachable or not sgr-evidence/1: {describe_error(exc)}")]))
             ctx.evidence = None
     tried_connect = False
     for test_id in _selected(DYNAMIC_ORDER, only):
@@ -72,7 +79,7 @@ async def run_dynamic(ctx: tests_dynamic.DynamicContext, only: set[str] | None =
                 await ctx.device.connect()
                 ctx.connected = True
             except Exception as exc:
-                results.append(case.result(Verdict.ERROR, ctx.eid_label, findings=[Finding("error", repr(exc))]))
+                results.append(case.result(Verdict.ERROR, ctx.eid_label, findings=[Finding("error", describe_error(exc))]))
                 continue
         if case.needs_write and not ctx.allow_write:
             results.append(case.result(Verdict.SKIPPED, ctx.eid_label, findings=[Finding(
@@ -88,7 +95,7 @@ async def run_dynamic(ctx: tests_dynamic.DynamicContext, only: set[str] | None =
             if inspect.isawaitable(produced):
                 produced = await produced
         except Exception as exc:
-            produced = [case.result(Verdict.ERROR, ctx.eid_label, findings=[Finding("error", repr(exc))])]
+            produced = [case.result(Verdict.ERROR, ctx.eid_label, findings=[Finding("error", describe_error(exc))])]
         for r in produced:
             r.duration_s = r.duration_s or sw.elapsed()
         results.extend(produced)
@@ -100,11 +107,12 @@ async def run_dynamic(ctx: tests_dynamic.DynamicContext, only: set[str] | None =
 
 class TariffRunContext:
     def __init__(self, requests: list[dict[str, Any]], timeline: list[tuple[str, str, str]],
-                 evidence_events: list[Any] | None, oidc: Any):
+                 evidence_events: list[Any] | None, oidc: Any, clock_offset_s: float = 0.0):
         self.tariff_requests = requests
         self.tariff_timeline = timeline
         self.tariff_evidence = evidence_events
         self.tariff_oidc = oidc
+        self.clock_offset_s = clock_offset_s  # EMS clock minus this machine's
 
 
 def run_tariff_tests(ctx: TariffRunContext, only: set[str] | None = None) -> list[Result]:
@@ -114,7 +122,7 @@ def run_tariff_tests(ctx: TariffRunContext, only: set[str] | None = None) -> lis
         try:
             results.extend(case.func(case, ctx))
         except Exception as exc:
-            results.append(case.result(Verdict.ERROR, "tariff", findings=[Finding("error", repr(exc))]))
+            results.append(case.result(Verdict.ERROR, "tariff", findings=[Finding("error", describe_error(exc))]))
     return results
 
 

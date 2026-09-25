@@ -64,9 +64,11 @@ Add `--allow-write` to run the protocol write tests. They send valid, invalid
 and unauthenticated commands, then restore what they found. Add
 `--functional` to hold each mode long enough to judge its effect, and
 `--meter-eid` plus `--meter-point` to judge that effect against an independent
-reference meter at the grid connection point. Writes command a real building,
-and every test ends by writing the released state (NORMAL, neutral
-restriction).
+reference meter at the grid connection point. Writes command a real building.
+No test overrides a mode it finds in force, such as a grid operator's live
+command: that test is reported `INCONCLUSIVE`. Every test ends by writing the
+released state (NORMAL, neutral restriction), with retries, including after a
+failure or Ctrl+C. Credentials never reach the console or the reports.
 
 **3. Serve dynamic tariffs** and point the EMS at them:
 
@@ -138,7 +140,10 @@ around it silently:
 - **API keys are unsupported.** `ApiKeySecurityScheme` raises "unsupported
   authentication method".
 - **Reads are cached.** REST reads are cached for 5 s, so the bench always
-  reads with `skip_cache`.
+  reads with `skip_cache`. The cache key ignores query parameters.
+- **Basic credentials use the wrong alphabet.** They are encoded in URL-safe
+  base64 (RFC 7617 says standard base64). The hand-rendered negative tests
+  mirror this, so they succeed exactly when the CommHandler does.
 
 Defects found in the specification itself are pinned by `tests/test_spec_library.py`
 (for example, the JSON Schema embedded in FlexMgmt 4m GetSettings is not valid

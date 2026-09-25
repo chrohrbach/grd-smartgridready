@@ -87,7 +87,9 @@
           It is exchanged once per connection for a session token valid 24 h (POST
           /api/sgr/sgcp/session); reconnect daily.</p>
           <p>Writing requires the owner's consent (FlexMgmt GetSettings.WriteAccess); without it,
-          writes answer 403 and are journalled as rejected.</p>
+          commands answer 403 and are journalled as rejected, while releases (NORMAL, an inactive
+          RestrictPower) are always accepted. Withdrawing the consent ends every command in force
+          or pending at the next evaluation cycle.</p>
           <p>OpModeLoadCmd returns the last command; OpLoadState returns the mode actually enforced.
           They differ when MaximumLockTime has elapsed, when a restriction is deferred by
           MinimumRunTime, after 24 h without a new command (fall-back to NORMAL), and while the
@@ -95,8 +97,12 @@
           observe-only): the command is then recorded, journalled as not_enforceable, and takes
           effect if the engine applies again within its lock window. The evidence status says
           which (apply_enabled, not_applying_reason).</p>
-          <p>RestrictPower bounds the import at the connection point (MaximumPowerKw). The feed-in
-          bound (MinimumPowerKw) needs PV control, declared in GetSettings.PVControl.</p>
+          <p>RestrictPower bounds the import at the connection point (MaximumPowerKw), never below the
+          declared MinimumLoad; a restriction down at MinimumLoad is a lock and lasts at most
+          MaximumLockTime. The feed-in bound (MinimumPowerKw) needs PV control, declared in
+          GetSettings.PVControl. MAX is not in force (OpLoadState NORMAL, journalled
+          not_enforceable) while a higher-priority signal, such as an active restriction, outranks
+          it.</p>
           <p>Writes carry the value as a query parameter (OpModeLoadCmd=..., RestrictPower=&lt;JSON&gt;):
           sgr-commhandler up to 0.5.2 never sends the requestBody of a REST write call. A JSON
           body with the same field is accepted too.</p>

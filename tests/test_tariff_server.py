@@ -138,6 +138,11 @@ def pkce() -> tuple[str, str]:
     return verifier, challenge
 
 
+def grant(code: str, verifier: str) -> dict[str, str]:
+    return {"grant_type": "authorization_code", "code": code, "code_verifier": verifier,
+            "client_id": "grd-test-ems", "redirect_uri": "https://ems.example/cb"}
+
+
 async def authorize(s, base, challenge: str | None, method: str = "S256"):
     params = {"response_type": "code", "client_id": "grd-test-ems", "redirect_uri": "https://ems.example/cb",
               "state": "st"}
@@ -154,8 +159,7 @@ async def test_oidc_pkce_link_and_customer_tariffs(tariff):
         status, location = await authorize(s, base, challenge)
         assert status == 302
         code = parse_qs(urlparse(location).query)["code"][0]
-        async with s.post(base + "/oauth/token", data={"grant_type": "authorization_code", "code": code,
-                                                         "code_verifier": verifier}) as resp:
+        async with s.post(base + "/oauth/token", data=grant(code, verifier)) as resp:
             assert resp.status == 200
             tokens = await resp.json()
         bearer = {"Authorization": f"Bearer {tokens['access_token']}"}
@@ -194,9 +198,13 @@ async def test_oidc_refuses_missing_or_wrong_pkce(tariff):
         assert (await authorize(s, base, challenge, method="plain"))[0] == 400
         _, location = await authorize(s, base, challenge)
         code = parse_qs(urlparse(location).query)["code"][0]
-        async with s.post(base + "/oauth/token", data={"grant_type": "authorization_code", "code": code,
-                                                         "code_verifier": verifier + "x"}) as resp:
+        async with s.post(base + "/oauth/token", data=grant(code, verifier + "x")) as resp:
             assert resp.status == 400
+        _, location = await authorize(s, base, challenge)
+        code = parse_qs(urlparse(location).query)["code"][0]
+        async with s.post(base + "/oauth/token", data={**grant(code, verifier),
+                                                         "redirect_uri": "https://evil.example/cb"}) as resp:
+            assert resp.status == 400  # RFC 6749 4.1.3: same redirect_uri as the authorization request
         async with s.get(base + "/v2/emsLink", params={"ems_instance_id": "x"},
                          headers={"Authorization": "Bearer forged"}) as resp:
             assert resp.status == 401

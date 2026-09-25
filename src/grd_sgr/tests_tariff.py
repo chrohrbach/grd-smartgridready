@@ -7,7 +7,7 @@ side is ``tariff_server.TariffServer``.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from .evidence import EvidenceEvent
@@ -124,6 +124,27 @@ def t4_errors(case, ctx) -> list[Result]:
     return _judge_scenarios(case, ctx, ("http_500", "malformed", "gaps"))
 
 
+TARIFF_PATHS = ("/v1/tariffs", "/v2/tariffs", "/v2/customerTariffs")
+# A fetch is journalled after its response: allow this much between the two.
+_TOLERANCE = timedelta(seconds=2)
+
+
+def _attribute(ev: EvidenceEvent, ctx) -> str | None:
+    """The scenario the EMS was served when it fetched: that of the latest
+    tariff request the SERVER logged at or before the event (EMS clock
+    corrected by the offset measured at the start). The EMS's timestamp alone
+    would credit a fetch served under one scenario to the next."""
+    t = parse_iso(ev.ts) - timedelta(seconds=getattr(ctx, "clock_offset_s", 0.0) or 0.0)
+    log = [r for r in ctx.tariff_requests if r["path"] in TARIFF_PATHS and r.get("scenario")]
+    if log:
+        served = [r for r in log if parse_iso(r["ts"]) <= t + _TOLERANCE]
+        return served[-1]["scenario"] if served else None
+    for name, start, end in ctx.tariff_timeline:  # no server log: the timeline, corrected
+        if parse_iso(start) <= t <= parse_iso(end):
+            return name
+    return None
+
+
 def _judge_scenarios(case, ctx, names: tuple[str, ...]) -> list[Result]:
     results = []
     timeline: list[tuple[str, str, str]] = ctx.tariff_timeline  # (scenario, start_iso, end_iso)
@@ -136,9 +157,7 @@ def _judge_scenarios(case, ctx, names: tuple[str, ...]) -> list[Result]:
             results.append(case.result(Verdict.NOT_APPLICABLE, name, findings=[Finding(
                 "info", "the EMS exposes no evidence API: what it understood cannot be observed")]))
             continue
-        _, start, end = windows[-1]
-        lo, hi = parse_iso(start), parse_iso(end)
-        in_window = [e for e in _fetch_events(events) if lo <= parse_iso(e.ts) <= hi]
+        in_window = [e for e in _fetch_events(events) if _attribute(e, ctx) == name]
         if not in_window:
             results.append(case.result(Verdict.INCONCLUSIVE, name, findings=[Finding(
                 "warning", "no tariff_fetch evidence during the scenario window (EMS did not poll?)")]))

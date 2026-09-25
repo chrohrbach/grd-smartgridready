@@ -168,3 +168,14 @@ def overall_verdict(results: list[Result]) -> Verdict | None:
     if any(r.verdict == Verdict.PASS for r in results):
         return Verdict.PASS
     return None
+
+
+def effect_note(results: list[Result]) -> str | None:
+    """An overall PASS must not read as "the commands take effect" when the
+    functional tests ran but none could judge an effect (no reference meter,
+    a declared hold-back, nothing acted): say so next to the verdict."""
+    functional = [r for r in results if r.family == "F" and r.verdict != Verdict.SKIPPED]
+    if not functional or any(r.verdict in (Verdict.PASS, Verdict.FAIL) for r in functional):
+        return None
+    counts = ", ".join(f"{k} {v}" for k, v in sorted(summarize(functional).items()))
+    return f"the effect of the commands at the connection point was NOT judged ({counts})"

@@ -69,6 +69,19 @@ class EvidenceError(RuntimeError):
     pass
 
 
+def offset_from_status(status: dict[str, Any], local_epoch: float) -> float | None:
+    """EMS clock minus local clock, from a status taken at ``local_epoch``."""
+    from .framework import parse_iso
+
+    raw = status.get("clock_utc")
+    if not raw:
+        return None
+    try:
+        return parse_iso(str(raw)).timestamp() - local_epoch
+    except ValueError:
+        return None
+
+
 class EvidenceClient:
     def __init__(self, base_url: str, headers: dict[str, str] | None = None, timeout_s: float = 10.0):
         self.base_url = base_url.rstrip("/")
@@ -90,9 +103,30 @@ class EvidenceClient:
         return await self._get("/status")
 
     async def events(self, after_seq: int = 0, limit: int = 500) -> list[EvidenceEvent]:
+        """ONE page: a server may cap ``limit`` below what was asked."""
         data = await self._get("/events", {"after_seq": after_seq, "limit": limit})
         events = [EvidenceEvent.from_dict(e) for e in data.get("events") or []]
-        return sorted(events, key=lambda e: e.seq)
+        return sorted((e for e in events if e.seq > after_seq), key=lambda e: e.seq)
+
+    async def all_events(self, after_seq: int = 0, page: int = 500, max_pages: int = 1000) -> list[EvidenceEvent]:
+        """Every event after ``after_seq``, paging by cursor until an EMPTY page
+        (a short page proves nothing: the server may cap its page size)."""
+        out: list[EvidenceEvent] = []
+        cursor = after_seq
+        for _ in range(max_pages):
+            batch = await self.events(after_seq=cursor, limit=page)
+            if not batch:
+                break
+            out.extend(batch)
+            cursor = batch[-1].seq
+        return out
+
+    async def clock_offset_s(self) -> float | None:
+        """EMS clock minus this machine's clock (from ``clock_utc``, taken at the
+        middle of the request). None when the EMS does not say."""
+        t0 = time.time()
+        status = await self.status()
+        return offset_from_status(status, (t0 + time.time()) / 2)
 
     async def last_seq(self) -> int:
         data = await self._get("/status")
@@ -110,7 +144,7 @@ class EvidenceClient:
         seen: list[EvidenceEvent] = []
         cursor = after_seq
         while True:
-            batch = await self.events(after_seq=cursor)
+            batch = await self.all_events(after_seq=cursor)
             for ev in batch:
                 seen.append(ev)
                 cursor = max(cursor, ev.seq)

@@ -174,6 +174,9 @@ class TariffServer:
             "user_agent": request.headers.get("User-Agent", ""),
             "status": status,
             "note": note,
+            # What was served: the T tests attribute the EMS's fetches to the
+            # scenario of the request, not to the EMS's own clock.
+            "scenario": self.scenario,
         }
         with self._lock:
             self.requests.append(entry)
@@ -289,7 +292,8 @@ class TariffServer:
             self._log(request, 400, "PKCE S256 missing")
             return web.Response(status=400, text="PKCE (S256) is required")
         code = secrets.token_urlsafe(16)
-        self.oidc.codes[code] = {"challenge": q["code_challenge"], "redirect_uri": q.get("redirect_uri", "")}
+        self.oidc.codes[code] = {"challenge": q["code_challenge"], "redirect_uri": q.get("redirect_uri", ""),
+                                 "client_id": q.get("client_id", "")}
         target = q.get("redirect_uri", "") + "?" + urlencode({"code": code, "state": q.get("state", "")})
         self._log(request, 302, "code issued")
         raise web.HTTPFound(target)
@@ -303,6 +307,14 @@ class TariffServer:
             if meta is None:
                 self._log(request, 400, "unknown code")
                 return web.json_response({"error": "invalid_grant"}, status=400)
+            # RFC 6749 4.1.3: the token request repeats the client and the
+            # redirect URI of the authorization request; a real provider refuses
+            # a mismatch, so must this one or T5 passes EMSs a real one rejects.
+            if str(form.get("client_id", "")) != meta["client_id"] or \
+                    str(form.get("redirect_uri", "")) != meta["redirect_uri"]:
+                self._log(request, 400, "client_id / redirect_uri differ from the authorization request")
+                return web.json_response({"error": "invalid_grant", "error_description": "client/redirect"},
+                                         status=400)
             digest = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
             if digest != meta["challenge"]:
                 self._log(request, 400, "PKCE verifier mismatch")

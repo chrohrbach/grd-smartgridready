@@ -43,6 +43,15 @@ CommHandler, as a grid operator's flexibility manager would.
   Schemas embedded in profile texts extracted (one upstream syntax defect fixed).
 - `examples/casasmooth_grid_interface_rest.xml`: a complete SGCP EID.
 - A reference EMS for the bench's own tests, with one switch per defect.
+- An adversarial review of the bench before release found 10 defects, now fixed
+  and locked by `tests/test_review_findings.py`:
+  - credentials in reports;
+  - PASS given on an unreadable meter, on a Basic-auth EMS, or on a journal
+    that only ever excused;
+  - FAIL given on clock skew, capped pages, or API-key headers;
+  - releases that could be lost;
+  - declared defaults ignored;
+  - DNS rebinding of the legacy UI.
 
 ### Changed
 - `grd_simulator.py` is now the *legacy* webhook harness, kept stdlib-only

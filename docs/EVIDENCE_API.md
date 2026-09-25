@@ -41,7 +41,7 @@ public information.
 | Field | Required | Meaning |
 |---|---|---|
 | `api` | yes | Always `"sgr-evidence/1"`; a client refuses anything else. |
-| `clock_utc` | yes | The EMS clock, so a client can estimate the skew. |
+| `clock_utc` | yes | The EMS clock. A client measures the offset once, from this field, and corrects every event timestamp with it. |
 | `last_seq` | yes | The highest `seq` in the journal (0 if empty). A client reads it before a command, then asks for the events after it. |
 | `apply_enabled` | yes | `false` when commands are accepted and journalled but **applied to no real device** (engine off, simulation, observe-only, missing subscription). A bench must not judge effects then. |
 | `not_applying_reason` | when `apply_enabled` is false | A human-readable reason. |
@@ -73,8 +73,9 @@ Extra fields are allowed and ignored (casasmooth adds `engine_mode`,
 }
 ```
 
-Events with `seq > after_seq`, oldest first, at most `limit` of them (the
-server may cap `limit`; a client pages with the last `seq` it got).
+Events with `seq > after_seq`, oldest first, at most `limit` of them. The
+server may cap `limit`, so a client pages with the last `seq` it got **until an
+empty page**: a short page proves nothing.
 
 | Field | Meaning |
 |---|---|
@@ -113,14 +114,17 @@ server may cap `limit`; a client pages with the last `seq` it got).
 | `result` | Meaning | Bench reading |
 |---|---|---|
 | `applied` | A real device command was written because of it. | outcome |
-| `observed_only` | It would have been, but the EMS is in observe-only mode. | outcome, no action → `INCONCLUSIVE` |
-| `received_not_applied` | No device reacted (nothing controllable for it). | outcome, no action → `INCONCLUSIVE` |
-| `deferred` | Deliberately held back (for example MinimumRunTime after a previous restriction). | outcome, hold-back → `INCONCLUSIVE` |
-| `not_enforceable` | Accepted and recorded, but cannot be in force now (engine off, lock time already used, nothing measured to enforce it). | outcome, hold-back → `INCONCLUSIVE` |
+| `observed_only` | It would have been, but the EMS is in observe-only mode. | contradicts `apply_enabled: true`, so FAIL |
+| `received_not_applied` | No device reacted (nothing controllable for it). | outcome with no action: `INCONCLUSIVE` |
+| `deferred` | Deliberately held back (for example MinimumRunTime after a previous restriction). | `INCONCLUSIVE` if the EID declares MinimumRunTime, FAIL otherwise |
+| `not_enforceable` | Accepted and recorded, but cannot be in force now (engine off, lock time already used, nothing measured to enforce it). | FAIL for LOCKED and RestrictPower while applying; `INCONCLUSIVE` for REDUCED and MAX |
 
-A `device_command` event is an outcome too. After a command, a bench waits at
-most `declared.reaction_time_s` for the first outcome with the command's
-`correlation_id`.
+A `device_command` event is an outcome too. Its `result` is `written` when the
+command reached the device; `failed`, `error`, `timeout`, `rejected` and
+`refused` are failures. After a command, a bench waits at most
+`declared.reaction_time_s` for the first outcome with the command's
+`correlation_id`. Every accepted command needs at least one `decision` under
+its correlation id, whatever its outcome.
 
 ## Guidance for implementers
 

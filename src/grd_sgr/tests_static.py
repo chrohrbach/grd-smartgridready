@@ -14,6 +14,7 @@ from xml.etree import ElementTree as ET
 
 import xmlschema
 
+from .client import configuration_defaults
 from .eid import PLACEHOLDER_RE, Eid, EidDataPoint, EidFunctionalProfile
 from .framework import (
     Finding,
@@ -307,6 +308,16 @@ def s4_data_points(case, ctx) -> list[Result]:
     return results
 
 
+def _shown(value: str | None, defaults: dict[str, str]) -> str | None:
+    """An attribute value as the EMS will hold it: a configuration placeholder
+    with its declared default, or said to be set at instantiation."""
+    if value is None or "{{" not in value:
+        return value
+    return PLACEHOLDER_RE.sub(
+        lambda m: f"{m.group(0)} (default {defaults[m.group(1)]})" if m.group(1) in defaults
+        else f"{m.group(0)} (set at instantiation, no default)", value)
+
+
 @testcase(
     "S5",
     "Generic attributes needed as test criteria are declared",
@@ -319,6 +330,7 @@ def s4_data_points(case, ctx) -> list[Result]:
 def s5_attributes(case, ctx) -> list[Result]:
     results = []
     eid: Eid = ctx.eid
+    defaults = configuration_defaults(ctx.eid_text)
     for fp in eid.functional_profiles:
         needed = CRITERIA_ATTRIBUTES.get(fp.key.type)
         if not needed:
@@ -334,7 +346,8 @@ def s5_attributes(case, ctx) -> list[Result]:
                 )],
             ))
         else:
-            values = {name: (eid.attribute_for(fp, name).value, eid.attribute_for(fp, name).unit) for name in needed}
+            values = {name: (_shown(eid.attribute_for(fp, name).value, defaults), eid.attribute_for(fp, name).unit)
+                      for name in needed}
             results.append(case.result(Verdict.PASS, fp.name,
                                        findings=[Finding("info", f"declared: {values}")]))
     if not results:

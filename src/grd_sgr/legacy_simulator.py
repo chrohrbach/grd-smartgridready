@@ -1168,6 +1168,11 @@ class Handler(BaseHTTPRequestHandler):
     ui_html: str = ""       # injected (pre-rendered for the process's --lang)
     ui_token: str = ""      # injected; "" disables the check (--no-auth, loopback only)
     protect_ui: bool = False  # True when bound to a non-loopback address
+    # Host names this harness answers to. A DNS-rebinding page reaches
+    # 127.0.0.1 under ITS OWN name: refusing any other Host keeps it from
+    # reading the page (which embeds the UI token) and from posting as
+    # same-origin. Empty = no check (tests building the handler directly).
+    allowed_hosts: frozenset = frozenset()
     server_version = "GRDSim/2.0"
 
     # Endpoints that make the EMS (and therefore a building) act, or that
@@ -1191,6 +1196,22 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
         self.wfile.write(body)
+
+    def _host_ok(self) -> bool:
+        if not self.allowed_hosts:
+            return True
+        host = (self.headers.get("Host") or "").strip().lower()
+        if host.startswith("["):  # [::1]:8770
+            name = host.split("]", 1)[0] + "]"
+        else:
+            name = host.rsplit(":", 1)[0] if host.count(":") == 1 else host
+        return name in self.allowed_hosts
+
+    def _refuse_host(self) -> bool:
+        if self._host_ok():
+            return False
+        self._json(421, {"ok": False, "error": "unexpected Host header"})
+        return True
 
     def _authorized(self) -> bool:
         """``X-Sim-Token`` header (what the UI sends) or ``?token=`` (to open
@@ -1233,6 +1254,8 @@ class Handler(BaseHTTPRequestHandler):
     # -- routing -----------------------------------------------------------
 
     def do_GET(self):
+        if self._refuse_host():
+            return
         path = self.path.split("?", 1)[0]
         if path == "/" or path == "/index.html":
             if self.protect_ui and not self._authorized():
@@ -1261,6 +1284,8 @@ class Handler(BaseHTTPRequestHandler):
             self._json(404, {"error": "not found"})
 
     def do_POST(self):
+        if self._refuse_host():
+            return
         path = self.path.split("?", 1)[0]
         if path in self.PROTECTED:
             if not self._authorized():
@@ -1303,6 +1328,8 @@ class Handler(BaseHTTPRequestHandler):
             self._json(404, {"error": "not found"})
 
     def do_DELETE(self):
+        if self._refuse_host():
+            return
         if self.path.split("?", 1)[0] == "/api/cancel":
             if not self._authorized():
                 self._deny()
@@ -1754,6 +1781,20 @@ def _detect_lan_ip() -> str:
         s.close()
 
 
+def allowed_host_names(public_url: str, exposed: bool) -> frozenset:
+    """Loopback names always; when exposed, this machine's names and the host
+    of the public (callback) URL — what a legitimate client can call it."""
+    from urllib.parse import urlparse
+
+    names = {"localhost", "127.0.0.1", "[::1]"}
+    if exposed:
+        names |= {_detect_lan_ip(), socket.gethostname().lower(), socket.getfqdn().lower()}
+        host = urlparse(public_url).hostname
+        if host:
+            names.add(host.lower())
+    return frozenset(n for n in names if n)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(
         description="LEGACY harness for the casasmooth grid-signal webhook (not SmartGridready "
@@ -1790,6 +1831,7 @@ def main() -> None:
     Handler.ui_html = render_ui_html(state.lang)
     Handler.ui_token = ui_token
     Handler.protect_ui = args.expose
+    Handler.allowed_hosts = allowed_host_names(public_url, args.expose)
 
     stop = threading.Event()
     poller = threading.Thread(target=poller_loop, args=(state, args.poll_interval, stop),
