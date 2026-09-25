@@ -107,6 +107,28 @@ Verdicts are never inferred from silence:
 
 Full catalogue, with the clause each test checks: [docs/TEST_CATALOGUE.md](docs/TEST_CATALOGUE.md).
 
+### Not covered yet
+
+A passing run says nothing about what follows:
+
+- **The EMS as a communicator (family D).** The bench tests the EMS's
+  grid-facing side only. It does not yet simulate SmartGridready products (heat
+  pumps, chargers, meters) to check that an EMS drives *them* according to
+  their profiles.
+- **Physical effect without a reference meter.** F1 and F4 judge the effect at
+  the grid connection point only against an independent reference meter
+  (`--meter-eid`); without one they report `HARDWARE_REQUIRED`.
+- **Contact-based profiles.** There is no I/O bench for relay interfaces
+  (SG-Ready level 2 as defined by BWP), and the CommHandler's contacts driver
+  raises "Not implemented".
+- **What the profiles do not specify.** No test can pass or fail the reaction
+  time (only the declared value is checked), "REDUCED if possible", the
+  behaviour when the grid link drops, the priority between communicators,
+  operation levels 3, 5 and 6, the meaning of `testState`, or "secure and
+  kept up to date".
+- **The building label's proof in operation**, after about a year: that is
+  monitoring over time, not a test run.
+
 ## What an EMS must provide to be testable
 
 1. **An EID** of its grid-facing interface: category SGCP, the published
