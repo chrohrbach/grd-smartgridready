@@ -14,7 +14,6 @@ import re
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
-import aiohttp
 import pytest
 from aiohttp import web
 from conftest import EXAMPLE_EID, RunningEms, start_app
@@ -381,33 +380,6 @@ def test_the_raw_caller_honours_restapiverifycertificate(tmp_path):
         "<restApiAuthenticationMethod>", 1))
     assert RawRestCaller(eid, {"base_uri": "https://box", "api_key": "k"}).verify_tls is False
     assert RawRestCaller(EXAMPLE_EID, {"base_uri": "https://box", "api_key": "k"}).verify_tls is True
-
-
-# -- 10. the legacy harness only answers to its own names ------------------------------------
-
-
-async def test_legacy_harness_refuses_a_foreign_host_header():
-    import threading
-    from http.server import ThreadingHTTPServer
-
-    from grd_sgr import legacy_simulator as sim
-
-    handler = type("H", (sim.Handler,), {
-        "state": sim.SimState("http://127.0.0.1:9", "", "http://127.0.0.1:1"),
-        "ui_html": sim.render_ui_html("en"), "ui_token": "t", "protect_ui": False,
-        "allowed_hosts": sim.allowed_host_names("http://127.0.0.1:1", exposed=False)})
-    httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
-    threading.Thread(target=httpd.serve_forever, daemon=True).start()
-    port = httpd.server_address[1]
-    try:
-        async with aiohttp.ClientSession() as s:
-            async with s.get(f"http://127.0.0.1:{port}/", headers={"Host": "rebind.evil.example"}) as resp:
-                assert resp.status == 421
-            async with s.get(f"http://127.0.0.1:{port}/") as resp:
-                assert resp.status == 200
-    finally:
-        httpd.shutdown()
-        httpd.server_close()
 
 
 def test_a_missing_environment_variable_in_a_header_is_refused(monkeypatch):

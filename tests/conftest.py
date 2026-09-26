@@ -11,7 +11,7 @@ from aiohttp import web
 from fake_ems import FakeEms
 
 ROOT = Path(__file__).resolve().parents[1]
-EXAMPLE_EID = ROOT / "examples" / "casasmooth_grid_interface_rest.xml"
+EXAMPLE_EID = ROOT / "examples" / "example_ems_rest.xml"
 
 
 @dataclass

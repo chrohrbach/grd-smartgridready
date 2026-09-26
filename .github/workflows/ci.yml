@@ -27,6 +27,4 @@ jobs:
       - name: Tests
         run: pytest -q
       - name: Static validation of the example EID
-        run: grd-sgr validate examples/casasmooth_grid_interface_rest.xml --out reports/
-      - name: Legacy harness still runs on the standard library alone
-        run: python -S -s grd_simulator.py --help
+        run: grd-sgr validate examples/example_ems_rest.xml --out reports/

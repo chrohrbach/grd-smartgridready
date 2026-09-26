@@ -163,7 +163,7 @@ async def test_oidc_pkce_link_and_customer_tariffs(tariff):
             assert resp.status == 200
             tokens = await resp.json()
         bearer = {"Authorization": f"Bearer {tokens['access_token']}"}
-        ems = {"ems_instance_id": "casasmooth-0001"}
+        ems = {"ems_instance_id": "ems-0001"}
 
         assert (await get(s, base + "/v2/customerTariffs", params=ems, headers=bearer))[0] == 403
         status, text = await get(s, base + "/v2/emsLink", headers=bearer,

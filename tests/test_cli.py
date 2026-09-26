@@ -24,7 +24,7 @@ def test_validate_writes_the_three_reports(tmp_path, capsys):
     assert cli.main(["validate", str(EXAMPLE_EID), "--out", str(tmp_path)]) == 0
     report = json.loads((tmp_path / "report.json").read_text(encoding="utf-8"))
     assert report["overall"] == "PASS"
-    assert report["meta"]["subject"]["device_name"] == "casasmooth Grid Interface REST"
+    assert report["meta"]["subject"]["device_name"] == "Example EMS SGCP REST"
     assert report["meta"]["sgr_specification_commit"]
     suite = ET.parse(tmp_path / "report.junit.xml").getroot()
     assert suite.get("failures") == "0"

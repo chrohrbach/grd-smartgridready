@@ -15,7 +15,7 @@ tests lose their decision-level evidence.
 ## Endpoints
 
 Both are `GET`, return JSON, and sit under a base URL the EMS documents
-(casasmooth: `{base_uri}/api/sgr/evidence`). They should use **the same
+(the example EMS: `{base_uri}/api/sgr/evidence`). They should use **the same
 credentials as the SGr interface itself**: a journal of grid commands is not
 public information.
 
@@ -48,8 +48,8 @@ public information.
 | `declared.reaction_time_s` | recommended | The longest time between a command and its outcome that the EMS commits to; the functional tests' waiting window. |
 | `declared.*` | optional | The parameters the EMS enforces (the numbers behind the EID's generic attributes). |
 
-Extra fields are allowed and ignored (casasmooth adds `engine_mode`,
-`write_access`, `interfaces`, and others).
+Extra fields are allowed and ignored: an EMS may add its own, such as the state
+of its engine or of the owner's consent.
 
 ### `GET {base}/events?after_seq=N&limit=M`
 

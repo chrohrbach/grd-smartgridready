@@ -46,7 +46,7 @@ reproducible offline.
 **1. Check the declarations** (no EMS needed):
 
 ```bash
-grd-sgr validate examples/casasmooth_grid_interface_rest.xml --out reports/
+grd-sgr validate examples/example_ems_rest.xml --out reports/
 ```
 
 **2. Drive the EMS as a flexibility manager.** Read-only by default:
@@ -63,8 +63,11 @@ grd-sgr run my_ems_eid.xml \
 Add `--allow-write` to run the protocol write tests. They send valid, invalid
 and unauthenticated commands, then restore what they found. Add
 `--functional` to hold each mode long enough to judge its effect, and
-`--meter-eid` plus `--meter-point` to judge that effect against an independent
-reference meter at the grid connection point. Writes command a real building.
+`--meter-eid` plus `--meter-point` to judge that effect against a reference
+meter at the grid connection point: any product described by an EID. When the
+only reachable reference is the EMS's own `Metering` point, the report says it
+is read from the EMS's own host, and so is not independent of the system under
+test. Writes command a real building.
 No test overrides a mode it finds in force, such as a grid operator's live
 command: that test is reported `INCONCLUSIVE`. Every test ends by writing the
 released state (NORMAL, neutral restriction), with retries, including after a
@@ -115,9 +118,11 @@ A passing run says nothing about what follows:
   grid-facing side only. It does not yet simulate SmartGridready products (heat
   pumps, chargers, meters) to check that an EMS drives *them* according to
   their profiles.
-- **Physical effect without a reference meter.** F1 and F4 judge the effect at
-  the grid connection point only against an independent reference meter
-  (`--meter-eid`); without one they report `HARDWARE_REQUIRED`.
+- **Physical effect without an independent meter.** F1 and F4 judge the effect
+  at the grid connection point only against a reference meter (`--meter-eid`);
+  without one they report `HARDWARE_REQUIRED`. Judged on the EMS's own
+  `Metering` point, they show that the EMS acts on what it measures itself, not
+  what an independent meter would see.
 - **Contact-based profiles.** There is no I/O bench for relay interfaces
   (SG-Ready level 2 as defined by BWP), and the CommHandler's contacts driver
   raises "Not implemented".
@@ -135,8 +140,8 @@ A passing run says nothing about what follows:
    profiles it implements (`UniDirFlexLoadMgmt` 2m, `FlexMgmt` 4m…), and the
    generic attributes the profile texts ask to declare (`Curtailment`,
    `MinimumLoad`, `MaximumLockTime`…). Without these a functional test has no
-   number to compare against. `examples/casasmooth_grid_interface_rest.xml`
-   is a complete, schema-valid example.
+   number to compare against. `examples/example_ems_rest.xml` is a complete,
+   schema-valid example.
 2. **An interface the reference CommHandler can execute.** In sgr-commhandler
    0.5.x this means `NoSecurityScheme`, `BasicSecurityScheme` or
    `BearerSecurityScheme`; `ApiKeySecurityScheme` is rejected. Carry written
@@ -166,24 +171,17 @@ around it silently:
 - **Basic credentials use the wrong alphabet.** They are encoded in URL-safe
   base64 (RFC 7617 says standard base64). The hand-rendered negative tests
   mirror this, so they succeed exactly when the CommHandler does.
+- **No conversion after a query.** `unitConversionMultiplicator` and value
+  mappings apply only to a plain REST response; the result of a JMESPath,
+  JSONata, regular-expression or XPath query is returned as it is. An EID that
+  needs a conversion does it inside a JSONata query.
+- **A missing configuration value is a bare `KeyError`.** A configuration value
+  declared without a default must be given. For the reference meter, the bench
+  names the missing values before it starts.
 
 Defects found in the specification itself are pinned by `tests/test_spec_library.py`
 (for example, the JSON Schema embedded in FlexMgmt 4m GetSettings is not valid
 JSON upstream).
-
-## The legacy webhook harness
-
-Version 1.0.0 of this repository was a web UI pushing signals to casasmooth's
-proprietary grid-signal webhook. That is not SmartGridready communication. It
-is kept, stdlib only and with its SG-Ready states corrected to the BWP
-definition, for existing users:
-
-```bash
-python grd_simulator.py --target http://ems.local:28100 --token ...   # or: grd-sgr simulator ...
-```
-
-It now listens on 127.0.0.1 only unless `--expose` is given, and protects its
-own endpoints with a token. Contract: [docs/LEGACY_WEBHOOK.md](docs/LEGACY_WEBHOOK.md).
 
 ## Development
 
@@ -197,9 +195,17 @@ The test suite includes a reference EMS (`tests/fake_ems.py`) that speaks the
 example EID's contract. It has one switch per defect the bench must catch, and
 the end-to-end tests drive it through the real CommHandler.
 
+Contributions are welcome: see [CONTRIBUTING.md](CONTRIBUTING.md). Report a
+vulnerability privately, as described in [SECURITY.md](SECURITY.md).
+
+## Origin
+
+Written by Teleia SaRL, the maker of the casasmooth energy management system.
+The bench is vendor-neutral by design: it tests any EMS through the EID the EMS
+declares, and it contains no code specific to any vendor.
+
 ## License
 
 MIT, see [LICENSE](LICENSE). The vendored SmartGridready specification in
 `src/grd_sgr/spec/` keeps its BSD 3-Clause licence
 (`spec/LICENSE-SmartGridready.txt`, Copyright (c) 2023, SmartgridReady).
-Originally written by Teleia SaRL for casasmooth (https://www.casasmooth.com).

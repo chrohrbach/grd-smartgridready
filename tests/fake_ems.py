@@ -1,6 +1,6 @@
 """A reference EMS for the bench's own tests.
 
-It speaks the SGCP REST contract of ``examples/casasmooth_grid_interface_rest.xml``
+It speaks the SGCP REST contract of ``examples/example_ems_rest.xml``
 (UniDirFlexLoadMgmt 2m, FlexMgmt 4m, Metering ActivePowerAC, Bearer session
 exchange, values carried as query parameters) plus the sgr-evidence/1 API.
 Switches make it misbehave, so each test proves the bench catches one defect.

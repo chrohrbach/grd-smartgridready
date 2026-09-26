@@ -2,6 +2,32 @@
 
 All notable changes to this project are documented in this file.
 
+## [Unreleased]
+
+The bench becomes vendor-neutral: nothing in it is specific to one EMS.
+
+### Removed
+- The legacy webhook harness (`grd_simulator.py`, `grd-sgr simulator`,
+  `docs/LEGACY_WEBHOOK.md`). It spoke one vendor's proprietary webhook, not
+  SmartGridready. **Breaking** for anyone who still ran it.
+
+### Changed
+- The example EID is now a neutral example EMS, `examples/example_ems_rest.xml`:
+  the contract of the reference EMS the bench tests itself against. It replaces
+  `examples/casasmooth_grid_interface_rest.xml`; a vendor's EID belongs with
+  its product.
+
+### Added
+- The report names the reference meter and says when it is read from the EMS's
+  own host. Judged on the EMS's own `Metering` point, the effect is measured by
+  the system under test itself.
+- `CONTRIBUTING.md` (Developer Certificate of Origin) and `SECURITY.md`.
+
+### Fixed
+- `run --meter-eid` names the configuration values missing for the meter's EID
+  instead of failing with a bare `KeyError` from the CommHandler, and refuses a
+  meter it cannot build, as it refuses one it cannot read.
+
 ## [2.0.0] — 2026-09-25
 
 The project becomes a SmartGridready test bench. 1.0.0 spoke casasmooth's
