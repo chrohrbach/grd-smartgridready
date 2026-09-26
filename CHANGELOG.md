@@ -2,6 +2,22 @@
 
 All notable changes to this project are documented in this file.
 
+## [Unreleased]
+
+### Added
+- `examples/home_assistant_entity_meter.xml`: a reference meter read from one
+  Home Assistant entity (REST API, long-lived access token), for F1 and F4
+  when the meter is only reachable through Home Assistant. Its JSONata query
+  converts W, kW or MW to kW, and fails the reading on a state that is not a
+  number, on another unit, and on a value older than `max_age_s`.
+- The report names the reference meter, and says when it is read from the
+  EMS's own host: it is then not independent of the system under test.
+
+### Fixed
+- `run --meter-eid` names the configuration values missing for the meter's
+  EID instead of failing with a bare `KeyError` from the CommHandler, and
+  refuses a meter it cannot build, as it refuses one it cannot read.
+
 ## [2.0.0] — 2026-09-25
 
 The project becomes a SmartGridready test bench. 1.0.0 spoke casasmooth's

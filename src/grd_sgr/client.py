@@ -176,6 +176,17 @@ def configuration_defaults(text: str) -> dict[str, str]:
     return out
 
 
+def missing_configuration(text: str, properties: dict[str, str]) -> list[str]:
+    """Configuration values an EID declares without a default that were not
+    given. sgr-commhandler fails on them with a bare ``KeyError`` while
+    building the device."""
+    root = ET.fromstring(text)
+    defaults = configuration_defaults(text)
+    cl = root.find(f"{NS}configurationList")
+    names = [_text(c.find(f"{NS}name")) for c in cl.findall(f"{NS}configurationListElement")] if cl is not None else []
+    return [n for n in names if n and n not in defaults and n not in properties]
+
+
 def resolve_properties(text: str, properties: dict[str, str]) -> dict[str, str]:
     """The configuration the CommHandler actually uses: the given values, and
     each declared ``defaultValue`` for the others. Without the defaults a

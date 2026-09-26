@@ -20,6 +20,7 @@ import sys
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from .framework import (
     REGISTRY,
@@ -64,6 +65,13 @@ def parse_props_and_secrets(pairs: list[str], files: list[str]) -> tuple[dict[st
             props[key] = os.environ[name]
             secrets.add(props[key])
     return props, secrets
+
+
+def same_host(a: str | None, b: str | None) -> bool:
+    """Both URLs name the same host (the port does not count: a meter read
+    from the EMS's own machine is not independent of it)."""
+    hosts = [urlsplit(u).hostname if u else None for u in (a, b)]
+    return bool(hosts[0] and hosts[1] and hosts[0].lower() == hosts[1].lower())
 
 
 def parse_headers(items: list[str]) -> dict[str, str]:
@@ -139,6 +147,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         SgrDevice,
         describe_error,
         instantiate_text,
+        missing_configuration,
         resolve_properties,
         secret_values,
     )
@@ -165,13 +174,26 @@ def cmd_run(args: argparse.Namespace) -> int:
         evidence = EvidenceClient(args.evidence_url, headers)
     meter = None
     meter_point = None
+    meter_subject = None
     if args.meter_eid:
         meter_props, meter_secrets = parse_props_and_secrets(args.meter_prop, args.meter_props)
-        redactor.add(*meter_secrets)
+        meter_text = Path(args.meter_eid).read_text(encoding="utf-8")
+        redactor.add(*meter_secrets, *secret_values(meter_text, meter_props))
+        missing = missing_configuration(meter_text, meter_props)
+        if missing:
+            raise SystemExit("the reference meter's EID needs " + ", ".join(f"--meter-prop {n}=..." for n in missing))
         meter = SgrDevice(args.meter_eid, meter_props)
         if not args.meter_point or "." not in args.meter_point:
             raise SystemExit("--meter-point FP.DP is required with --meter-eid")
         meter_point = tuple(args.meter_point.split(".", 1))
+        meter_base = resolve_properties(meter_text, meter_props).get("base_uri", "")
+        meter_subject = {
+            "eid": Path(args.meter_eid).name, "point": args.meter_point, "base_uri": meter_base,
+            "same_host_as_ems": same_host(meter_base, resolve_properties(raw_text, props).get("base_uri")),
+        }
+        if meter_subject["same_host_as_ems"]:
+            print("note: the reference meter is read from the EMS's own host — "
+                  "it is not independent of the system under test")
     ctx = DynamicContext(
         eid=eid, eid_label=path.name, device=SgrDevice(path, props), raw=raw, evidence=evidence,
         allow_write=args.allow_write, functional=args.functional,
@@ -183,8 +205,8 @@ def cmd_run(args: argparse.Namespace) -> int:
         if meter is not None:
             # A reference meter that cannot be read would make every effect
             # unjudgeable — or, worse, silently judged on nothing: refuse now.
-            await meter.connect()
             try:
+                await meter.connect()
                 float(await meter.read(*meter_point))
             except Exception as exc:
                 raise SystemExit(f"reference meter {'.'.join(meter_point)} unreadable: "
@@ -196,6 +218,8 @@ def cmd_run(args: argparse.Namespace) -> int:
     results += asyncio.run(go())
     subject = {"device_name": eid.device_name, "manufacturer": eid.manufacturer, "eid": path.name,
                "base_uri": props.get("base_uri", "")}
+    if meter_subject is not None:
+        subject["reference_meter"] = meter_subject
     if raw is not None:
         redactor.add(*raw.secrets)
     return finish(results, subject, args.out, redactor)

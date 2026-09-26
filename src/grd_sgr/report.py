@@ -81,6 +81,13 @@ def _cell(text: str) -> str:
     return text.replace("|", "\\|").replace("\n", "<br>")
 
 
+def _meter_line(meter: dict[str, Any]) -> str:
+    line = f"- Reference meter: `{meter.get('eid', '?')}`, `{meter.get('point', '?')}`"
+    if meter.get("same_host_as_ems"):
+        line += " — read from the EMS's own host: not independent of the system under test"
+    return line
+
+
 def render_markdown(results: list[Result], meta: dict[str, Any]) -> str:
     subject = meta.get("subject", {})
     overall = overall_verdict(results)
@@ -89,6 +96,7 @@ def render_markdown(results: list[Result], meta: dict[str, Any]) -> str:
         "",
         f"- Subject: {subject.get('device_name', '?')} ({subject.get('manufacturer', '?')})",
         f"- EID: `{subject.get('eid', '?')}`",
+        *([_meter_line(subject["reference_meter"])] if subject.get("reference_meter") else []),
         f"- Tool: grd-smartgridready {meta['tool_version']}, SGr specification "
         f"`{meta['sgr_specification_commit'][:7]}` ({meta['sgr_specification_date']})",
         f"- Generated (UTC): {meta['generated_utc']}",

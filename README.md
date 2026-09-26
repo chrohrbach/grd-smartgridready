@@ -70,6 +70,30 @@ command: that test is reported `INCONCLUSIVE`. Every test ends by writing the
 released state (NORMAL, neutral restriction), with retries, including after a
 failure or Ctrl+C. Credentials never reach the console or the reports.
 
+**Reference meter from Home Assistant.** When the meter at the connection
+point is only reachable through Home Assistant (a cloud-connected inverter,
+for instance), `examples/home_assistant_entity_meter.xml` reads one entity
+through the Home Assistant REST API, with a long-lived access token:
+
+```bash
+export HA_TOKEN=...                       # Profile > Security > Long-lived access tokens
+grd-sgr run my_ems_eid.xml ... --allow-write --functional \
+  --meter-eid examples/home_assistant_entity_meter.xml \
+  --meter-prop base_uri=http://homeassistant.local:8123 \
+  --meter-prop token=env:HA_TOKEN --meter-prop entity_id=sensor.grid_power \
+  --meter-point ActivePowerAC.ActivePowerACtot
+```
+
+The reading is converted to kW from the entity's own unit (W, kW, MW), positive
+for import; add `--meter-prop sign=-1` for an entity that counts export as
+positive. A state that is not a number, another unit, or a value Home
+Assistant has not received for `max_age_s` seconds (default 300) fails the
+reading: it is never read as zero. S6 warns that this EID declares
+`NoSecurityScheme` while it sends an `Authorization` header; no scheme the
+CommHandler runs fits a static token. An entity of the EMS's own Home
+Assistant goes through the system under test: the report says so whenever the
+meter and the EMS share a host.
+
 **3. Serve dynamic tariffs** and point the EMS at them:
 
 ```bash
@@ -163,6 +187,10 @@ around it silently:
   authentication method".
 - **Reads are cached.** REST reads are cached for 5 s, so the bench always
   reads with `skip_cache`. The cache key ignores query parameters.
+- **No conversion after a query.** `unitConversionMultiplicator` and value
+  mappings apply only to a plain REST response; the result of a JMESPath,
+  JSONata, regular-expression or XPath query is returned as it is. The Home
+  Assistant meter therefore converts to kW inside its JSONata query.
 - **Basic credentials use the wrong alphabet.** They are encoded in URL-safe
   base64 (RFC 7617 says standard base64). The hand-rendered negative tests
   mirror this, so they succeed exactly when the CommHandler does.

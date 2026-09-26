@@ -1,0 +1,282 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Home Assistant entity as a reference meter, REST, generic.
+
+  Reads the active power at the grid connection point from ONE Home Assistant
+  entity (GET /api/states/<entity_id>, long-lived access token), so that
+  grd-sgr can judge F1 and F4 against a meter that is only reachable through
+  Home Assistant: a cloud-connected inverter or smart meter, for instance.
+  Usage: README, section "Reference meter from Home Assistant" (configuration
+  values base_uri, token and entity_id; meter point
+  ActivePowerAC.ActivePowerACtot).
+
+  The reading is converted to kW from the entity's own unit (W, kW or MW), and
+  signed + import / - export ("sign" = -1 for an entity that counts export as
+  positive). A state that is not a number ("unavailable", "unknown"), another
+  unit, or a value not reported for "max_age_s" seconds is an ERROR, never a
+  number: the bench counts a failed reading, it never reads it as zero.
+
+  Independence: an entity of the EMS's own Home Assistant goes through the
+  system under test. grd-sgr says so in its report when the meter and the EMS
+  share a host.
+
+  Not declared by the SmartGridready association: release Draft, testState None.
+-->
+<DeviceFrame xmlns="http://www.smartgridready.com/ns/V0/"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xsi:schemaLocation="http://www.smartgridready.com/ns/V0/ ../../SchemaDatabase/SGr/Product/Product.xsd">
+  <deviceName>Home Assistant Entity Power Meter</deviceName>
+  <manufacturerName>grd-smartgridready</manufacturerName>
+  <specificationOwnerIdentification>0</specificationOwnerIdentification>
+  <releaseNotes>
+    <state>Draft</state>
+    <changeLog>
+      <version>1.0.0</version>
+      <date>2026-09-26</date>
+      <author>grd-smartgridready</author>
+      <comment>Grid power from one Home Assistant entity, as the reference meter of F1 and F4</comment>
+    </changeLog>
+  </releaseNotes>
+  <deviceInformation>
+    <legibleDescription>
+      <textElement>
+        <![CDATA[
+          <p>Reads the net active power at the grid connection point from one Home Assistant
+          entity, through the Home Assistant REST API, and gives it in kW, positive for import.
+          Written for grd-smartgridready, to use as the reference meter of its functional tests
+          when the meter is only reachable through Home Assistant.</p>
+        ]]>
+      </textElement>
+      <language>en</language>
+      <uri>https://github.com/chrohrbach/grd-smartgridready</uri>
+    </legibleDescription>
+    <legibleDescription>
+      <textElement>
+        <![CDATA[
+          <p>Liest die Netto-Wirkleistung am Netzanschlusspunkt aus einer Home-Assistant-Entität
+          über die REST-API von Home Assistant und gibt sie in kW aus, Bezug positiv. Geschrieben
+          für grd-smartgridready, als Referenzzähler der Funktionstests, wenn der Zähler nur über
+          Home Assistant erreichbar ist.</p>
+        ]]>
+      </textElement>
+      <language>de</language>
+      <uri>https://github.com/chrohrbach/grd-smartgridready</uri>
+    </legibleDescription>
+    <legibleDescription>
+      <textElement>
+        <![CDATA[
+          <p>Lit la puissance active nette au point de raccordement dans une entité Home Assistant,
+          par l'API REST de Home Assistant, et la donne en kW, positive au soutirage. Écrite pour
+          grd-smartgridready, comme compteur de référence de ses tests fonctionnels quand le
+          compteur n'est joignable que par Home Assistant.</p>
+        ]]>
+      </textElement>
+      <language>fr</language>
+      <uri>https://github.com/chrohrbach/grd-smartgridready</uri>
+    </legibleDescription>
+    <deviceCategory>Generic</deviceCategory>
+    <isLocalControl>true</isLocalControl>
+    <softwareRevision>1.0</softwareRevision>
+    <manufacturerSpecificationIdentification>home-assistant-entity-meter</manufacturerSpecificationIdentification>
+    <levelOfOperation>m</levelOfOperation>
+    <versionNumber>
+      <primaryVersionNumber>1</primaryVersionNumber>
+      <secondaryVersionNumber>0</secondaryVersionNumber>
+      <subReleaseVersionNumber>0</subReleaseVersionNumber>
+    </versionNumber>
+    <testState>None</testState>
+    <programmerHints>
+      <textElement>
+        <![CDATA[
+          <p>Authentication: a Home Assistant long-lived access token (configuration value
+          <i>token</i>), sent as "Authorization: Bearer" on each read. The token is created by the
+          owner of the Home Assistant instance (Profile, Security) and can be revoked there; give it
+          to grd-sgr through an environment variable (token=env:NAME) so that it is masked in every
+          output.</p>
+          <p>The response query is a JSONata expression, because sgr-commhandler applies
+          neither unitConversionMultiplicator nor value mappings after a query: the expression
+          itself converts W, kW or MW to kW, applies <i>sign</i>, and raises an error for a state
+          that is not a number, for any other unit, and for a value last reported more than
+          <i>max_age_s</i> seconds ago (last_reported, or last_updated on Home Assistant before
+          2024.3). A frozen cloud feed therefore fails the reading instead of feeding a
+          plausible value to a verdict.</p>
+          <p>Read-only: the profile has no write call.</p>
+        ]]>
+      </textElement>
+      <language>en</language>
+    </programmerHints>
+  </deviceInformation>
+  <configurationList>
+    <configurationListElement>
+      <name>base_uri</name>
+      <dataType>
+        <string />
+      </dataType>
+      <defaultValue>http://homeassistant.local:8123</defaultValue>
+      <configurationDescription>
+        <textElement>Base address of Home Assistant, without /api</textElement>
+        <language>en</language>
+        <label>Base URI</label>
+      </configurationDescription>
+    </configurationListElement>
+    <configurationListElement>
+      <name>token</name>
+      <dataType>
+        <string />
+      </dataType>
+      <configurationDescription>
+        <textElement>Home Assistant long-lived access token</textElement>
+        <language>en</language>
+        <label>Access token</label>
+      </configurationDescription>
+    </configurationListElement>
+    <configurationListElement>
+      <name>entity_id</name>
+      <dataType>
+        <string />
+      </dataType>
+      <configurationDescription>
+        <textElement>Entity giving the power at the grid connection point, in W, kW or MW (for example sensor.grid_power)</textElement>
+        <language>en</language>
+        <label>Entity</label>
+      </configurationDescription>
+    </configurationListElement>
+    <configurationListElement>
+      <name>sign</name>
+      <dataType>
+        <int32 />
+      </dataType>
+      <defaultValue>1</defaultValue>
+      <configurationDescription>
+        <textElement>1 if the entity counts import as positive, -1 if it counts export as positive</textElement>
+        <language>en</language>
+        <label>Sign</label>
+      </configurationDescription>
+    </configurationListElement>
+    <configurationListElement>
+      <name>max_age_s</name>
+      <dataType>
+        <int32 />
+      </dataType>
+      <defaultValue>300</defaultValue>
+      <configurationDescription>
+        <textElement>Oldest accepted value, seconds since Home Assistant last received it</textElement>
+        <language>en</language>
+        <label>Maximum age</label>
+      </configurationDescription>
+    </configurationListElement>
+    <configurationListElement>
+      <name>verify_certificate</name>
+      <dataType>
+        <string />
+      </dataType>
+      <defaultValue>true</defaultValue>
+      <configurationDescription>
+        <textElement>false to accept a self-signed HTTPS certificate</textElement>
+        <language>en</language>
+        <label>Verify certificate</label>
+      </configurationDescription>
+    </configurationListElement>
+  </configurationList>
+  <interfaceList>
+    <restApiInterface>
+      <restApiInterfaceDescription>
+        <restApiInterfaceSelection>URI</restApiInterfaceSelection>
+        <restApiUri>{{base_uri}}</restApiUri>
+        <restApiAuthenticationMethod>NoSecurityScheme</restApiAuthenticationMethod>
+        <restApiVerifyCertificate>{{verify_certificate}}</restApiVerifyCertificate>
+      </restApiInterfaceDescription>
+      <functionalProfileList>
+        <functionalProfileListElement>
+          <functionalProfile>
+            <functionalProfileName>ActivePowerAC</functionalProfileName>
+            <functionalProfileIdentification>
+              <specificationOwnerIdentification>0</specificationOwnerIdentification>
+              <functionalProfileCategory>Metering</functionalProfileCategory>
+              <functionalProfileType>ActivePowerAC</functionalProfileType>
+              <levelOfOperation>m</levelOfOperation>
+              <versionNumber>
+                <primaryVersionNumber>1</primaryVersionNumber>
+                <secondaryVersionNumber>1</secondaryVersionNumber>
+                <subReleaseVersionNumber>0</subReleaseVersionNumber>
+              </versionNumber>
+            </functionalProfileIdentification>
+          </functionalProfile>
+          <genericAttributeList>
+            <genericAttributeListElement>
+              <name>MeteringDirection</name>
+              <dataType>
+                <enum>
+                  <enumEntry>
+                    <literal>Net</literal>
+                  </enumEntry>
+                  <enumEntry>
+                    <literal>Import</literal>
+                  </enumEntry>
+                  <enumEntry>
+                    <literal>Export</literal>
+                  </enumEntry>
+                </enum>
+              </dataType>
+              <value>Net</value>
+              <unit>NONE</unit>
+            </genericAttributeListElement>
+            <genericAttributeListElement>
+              <name>MeteringTariffNr</name>
+              <dataType>
+                <int32 />
+              </dataType>
+              <value>0</value>
+              <unit>NONE</unit>
+            </genericAttributeListElement>
+          </genericAttributeList>
+          <dataPointList>
+            <dataPointListElement>
+              <dataPoint>
+                <dataPointName>ActivePowerACtot</dataPointName>
+                <dataDirection>R</dataDirection>
+                <dataType>
+                  <float64 />
+                </dataType>
+                <unit>KILOWATTS</unit>
+                <legibleDescription>
+                  <textElement>Net active power at the grid connection point (+ import, - export), from the Home Assistant entity {{entity_id}}</textElement>
+                  <language>en</language>
+                </legibleDescription>
+              </dataPoint>
+              <restApiDataPointConfiguration>
+                <dataType>JSON_number</dataType>
+                <restApiReadServiceCall>
+                  <requestHeader>
+                    <header>
+                      <headerName>Accept</headerName>
+                      <value>application/json</value>
+                    </header>
+                    <header>
+                      <headerName>Authorization</headerName>
+                      <value>Bearer {{token}}</value>
+                    </header>
+                  </requestHeader>
+                  <requestMethod>GET</requestMethod>
+                  <requestPath>/api/states/{{entity_id}}</requestPath>
+                  <responseQuery>
+                    <queryType>JSONataExpression</queryType>
+                    <query><![CDATA[(
+  $unit := attributes.unit_of_measurement;
+  $factor := $unit = "W" ? 0.001 : $unit = "kW" ? 1 : $unit = "MW" ? 1000
+    : $error("{{entity_id}}: unit " & $string($unit) & " is not W, kW or MW");
+  $seen := last_reported ? last_reported : last_updated;
+  $age := ($millis() - $toMillis($seen)) / 1000;
+  $age > {{max_age_s}} ? $error("{{entity_id}}: stale, last reported " & $string($round($age)) & " s ago");
+  $number(state) * $factor * {{sign}}
+)]]></query>
+                  </responseQuery>
+                </restApiReadServiceCall>
+              </restApiDataPointConfiguration>
+            </dataPointListElement>
+          </dataPointList>
+        </functionalProfileListElement>
+      </functionalProfileList>
+    </restApiInterface>
+  </interfaceList>
+</DeviceFrame>
