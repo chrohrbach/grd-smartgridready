@@ -17,9 +17,15 @@ defines it: through the **functional profiles** it declares and the **EID**
   SmartGridready standardises how a command is written, not how anyone later
   proves what the EMS did with it; this API fills that gap.
 
-Every run produces a protocol in JSON, JUnit XML and Markdown. The Markdown
-report is laid out like the commissioning ("IBN") test sheet of the
-SmartGridready building label.
+Every run produces an **audit report** (`report.html`, self-contained and
+printable): scope, method, every verdict with the clause it checks, the
+findings and raw evidence behind it, what the run cannot prove, and the SHA-256
+of the JSON evidence it was rendered from. The same run is also written as JSON
+(the evidence), JUnit XML (CI) and Markdown, laid out like the commissioning
+("IBN") test sheet of the SmartGridready building label. Reports never carry a
+credential, and they mask the personal data an EMS declares to its grid
+operator (address, meter number, measuring point): the tests judge the real
+values, the reports keep their shape.
 
 > **Not a certification.** Only the SmartGridready association declares
 > products, and "SmartGridready" is its name. This tool produces evidence that
@@ -82,6 +88,44 @@ grd-sgr tariff-run --scenarios normal,dst_spring,http_500 --dwell 600 \
 ```
 
 `grd-sgr list-tests` prints the catalogue.
+
+**4. Or do all of it in the browser:**
+
+```bash
+grd-sgr ui          # prints http://127.0.0.1:8770/?token=… — open it
+```
+
+Four tabs:
+- **EMS**: load its EID; its configuration values become a form. Add the
+  evidence API and a reference meter if you have them.
+- **Compliance**: choose the families and run them. The results appear test by
+  test, and each run gives its audit report and evidence.
+- **Tariffs**: serve the tariff scenarios while the EMS polls them, then judge
+  T1–T6.
+- **Console**: talk to the EMS as a grid operator would. Read its data points,
+  send a mode or a restriction, and watch its evidence journal.
+
+Credentials stay with the tool and never reach the browser. Every write to the
+EMS needs an explicit confirmation.
+
+The interface listens on 127.0.0.1, and every request needs the token of the
+printed address. `--expose` listens on every interface; the token is still
+required. `--public` serves it behind an HTTPS reverse proxy without a token.
+It then requires `--allow-target`: the only hosts it may connect to.
+
+```bash
+grd-sgr ui --public --allow-target example.net --allow-host bench.example.net
+```
+
+In that mode:
+- only REST EIDs are accepted;
+- every request path must start with `/`;
+- the tariff runs are off, since the EMS would have to reach the host.
+
+The reference CommHandler follows HTTP redirects. A hosted instance must
+therefore run with its outbound traffic limited to the allowed targets, so
+that an EMS answering with a redirect cannot lead it into the host's own
+network.
 
 ## What is tested, and what cannot be
 

@@ -393,7 +393,8 @@ class RawRestCaller:
             return None
         r = render_call(call, default_method="POST")
         async with session.request(r.method, self.base_url + r.path, headers=r.headers,
-                                   params=r.params, data=r.body, ssl=None if self.verify_tls else False) as resp:
+                                   params=r.params, data=r.body, ssl=None if self.verify_tls else False,
+                                   allow_redirects=False) as resp:
             text = await resp.text()
             resp.raise_for_status()
         query = call.find(f"{NS}responseQuery")
@@ -431,5 +432,6 @@ class RawRestCaller:
                     if basic:
                         r.headers["Authorization"] = basic
             async with session.request(r.method, self.base_url + r.path, headers=r.headers, params=r.params,
-                                       data=r.body, ssl=None if self.verify_tls else False) as resp:
+                                       data=r.body, ssl=None if self.verify_tls else False,
+                                       allow_redirects=False) as resp:
                 return RawResponse(resp.status, await resp.text(), dict(resp.headers), r.note)

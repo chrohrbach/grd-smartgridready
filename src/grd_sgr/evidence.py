@@ -91,7 +91,8 @@ class EvidenceClient:
     async def _get(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         async with aiohttp.ClientSession(timeout=self.timeout) as session:
             async with session.get(self.base_url + path, headers=self.headers,
-                                   params={k: str(v) for k, v in (params or {}).items()}) as resp:
+                                   params={k: str(v) for k, v in (params or {}).items()},
+                                   allow_redirects=False) as resp:  # a redirect is an answer, never followed
                 if resp.status != 200:
                     raise EvidenceError(f"GET {path} -> HTTP {resp.status}: {(await resp.text())[:200]}")
                 data = await resp.json(content_type=None)

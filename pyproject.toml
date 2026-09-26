@@ -43,7 +43,7 @@ version = { attr = "grd_sgr.__version__" }
 where = ["src"]
 
 [tool.setuptools.package-data]
-grd_sgr = ["spec/*", "spec/**/*"]
+grd_sgr = ["spec/*", "spec/**/*", "ui_static/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

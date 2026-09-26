@@ -4,7 +4,8 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
-The bench becomes vendor-neutral: nothing in it is specific to one EMS.
+The bench becomes vendor-neutral: nothing in it is specific to one EMS. It
+gains a web interface, and every run gives an audit report.
 
 ### Removed
 - The legacy webhook harness (`grd_simulator.py`, `grd-sgr simulator`,
@@ -18,6 +19,28 @@ The bench becomes vendor-neutral: nothing in it is specific to one EMS.
   its product.
 
 ### Added
+- `grd-sgr ui`: a web interface for the whole bench. It describes the EMS from
+  its EID, runs the compliance tests test by test, serves the tariff scenarios,
+  and offers a grid operator console (read the data points, send a mode or a
+  restriction, watch the evidence journal).
+  - Access: local and token-protected by default; `--expose` for a LAN (token
+    kept); `--public` for hosting behind HTTPS, where the reachable hosts must
+    be listed (`--allow-target`), only REST EIDs are accepted, and every request
+    path must start with `/`.
+  - Protections:
+    - the Host header is checked (DNS rebinding);
+    - state changes need a custom header (CSRF);
+    - writes need an explicit confirmation;
+    - credentials never reach the browser;
+    - a strict Content-Security-Policy is sent.
+- The audit report, `report.html`, for the CLI and the interface alike. It
+  gives the scope, the method, every verdict with its clause, findings and raw
+  evidence, and the limits of the run. It quotes the SHA-256 of the
+  `report.json` it was rendered from. Everything the EMS says is escaped, and
+  the page carries no script.
+- Reports mask the personal data an EMS declares to its grid operator: the
+  address, meter number and measuring point in FlexMgmt GetSettings. The
+  tests judge the real values.
 - The report names the reference meter and says when it is read from the EMS's
   own host. Judged on the EMS's own `Metering` point, the effect is measured by
   the system under test itself.

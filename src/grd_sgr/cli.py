@@ -16,10 +16,8 @@ import asyncio
 import json
 import os
 import sys
-import time
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
 
 from .framework import (
     REGISTRY,
@@ -67,10 +65,10 @@ def parse_props_and_secrets(pairs: list[str], files: list[str]) -> tuple[dict[st
 
 
 def same_host(a: str | None, b: str | None) -> bool:
-    """Both URLs name the same host (the port does not count: a meter read
-    from the EMS's own machine is not independent of it)."""
-    hosts = [urlsplit(u).hostname if u else None for u in (a, b)]
-    return bool(hosts[0] and hosts[1] and hosts[0].lower() == hosts[1].lower())
+    """See ``setup.same_host`` (imported lazily: the CLI starts fast)."""
+    from .setup import same_host as _same_host
+
+    return _same_host(a, b)
 
 
 def parse_headers(items: list[str]) -> dict[str, str]:
@@ -110,7 +108,7 @@ def print_results(results: list[Result], note: str | None = None) -> None:
 
 
 def finish(results: list[Result], subject: dict[str, Any], out: str | None,
-           redactor: Redactor | None = None) -> int:
+           redactor: Redactor | None = None, settings: dict[str, Any] | None = None) -> int:
     """Print and write the results — after masking every credential."""
     from .report import run_metadata, write_all
 
@@ -120,7 +118,7 @@ def finish(results: list[Result], subject: dict[str, Any], out: str | None,
     note = effect_note(results)
     print_results(results, note)
     if out:
-        paths = write_all(results, run_metadata(subject, note), Path(out))
+        paths = write_all(results, run_metadata(subject, note, settings), Path(out))
         print("  reports: " + ", ".join(str(p) for p in paths.values()))
     return 1 if overall_verdict(results) == Verdict.FAIL else 0
 
@@ -141,87 +139,51 @@ def cmd_validate(args: argparse.Namespace) -> int:
 
 
 def cmd_run(args: argparse.Namespace) -> int:
-    from .client import (
-        RawRestCaller,
-        SgrDevice,
-        describe_error,
-        instantiate_text,
-        missing_configuration,
-        resolve_properties,
-        secret_values,
-    )
-    from .eid import parse_eid
-    from .evidence import EvidenceClient
     from .runner import run_dynamic, run_static
-    from .tests_dynamic import DynamicContext
+    from .setup import RunSettings, RunTarget, SetupError, check_meter, prepare
 
     path = Path(args.eid)
     props, env_secrets = parse_props_and_secrets(args.prop, args.props)
     only = set(args.only.split(",")) if args.only else None
     results = run_static(path, args.communicator, only)
-    raw_text = path.read_text(encoding="utf-8")
-    # The configuration the CommHandler will use: given values + declared
-    # defaults (a generic attribute such as {{minimum_load_kw}} must not stay a
-    # placeholder here while the EMS enforces its default).
-    eid = parse_eid(instantiate_text(raw_text, resolve_properties(raw_text, props)))
-    raw = RawRestCaller(path, props) if eid.interface_type == "rest" else None
-    redactor = Redactor(env_secrets | secret_values(raw_text, props))
-    evidence = None
-    if args.evidence_url:
-        headers = parse_headers(args.evidence_header)
-        redactor.add(*headers.values())
-        evidence = EvidenceClient(args.evidence_url, headers)
-    meter = None
+    meter_props, meter_secrets = parse_props_and_secrets(args.meter_prop, args.meter_props)
     meter_point = None
-    meter_subject = None
     if args.meter_eid:
-        meter_props, meter_secrets = parse_props_and_secrets(args.meter_prop, args.meter_props)
-        meter_text = Path(args.meter_eid).read_text(encoding="utf-8")
-        redactor.add(*meter_secrets, *secret_values(meter_text, meter_props))
-        missing = missing_configuration(meter_text, meter_props)
-        if missing:
-            raise SystemExit("the reference meter's EID needs " + ", ".join(f"--meter-prop {n}=..." for n in missing))
-        meter = SgrDevice(args.meter_eid, meter_props)
         if not args.meter_point or "." not in args.meter_point:
             raise SystemExit("--meter-point FP.DP is required with --meter-eid")
         meter_point = tuple(args.meter_point.split(".", 1))
-        meter_base = resolve_properties(meter_text, meter_props).get("base_uri", "")
-        meter_subject = {
-            "eid": Path(args.meter_eid).name, "point": args.meter_point, "base_uri": meter_base,
-            "same_host_as_ems": same_host(meter_base, resolve_properties(raw_text, props).get("base_uri")),
-        }
-        if meter_subject["same_host_as_ems"]:
-            print("note: the reference meter is read from the EMS's own host — "
-                  "it is not independent of the system under test")
-    ctx = DynamicContext(
-        eid=eid, eid_label=path.name, device=SgrDevice(path, props), raw=raw, evidence=evidence,
+    target = RunTarget(
+        eid_path=path, props=props, secrets=env_secrets | meter_secrets,
+        evidence_url=args.evidence_url,
+        evidence_headers=parse_headers(args.evidence_header) if args.evidence_url else {},
+        meter_eid_path=Path(args.meter_eid) if args.meter_eid else None,
+        meter_props=meter_props, meter_point=meter_point,
+    )
+    settings = RunSettings(
         allow_write=args.allow_write, functional=args.functional,
         readback_timeout_s=args.readback_timeout, reaction_time_s=args.reaction_time, hold_s=args.hold,
-        meter=meter, meter_point=meter_point, meter_tolerance_kw=args.meter_tolerance,
+        meter_tolerance_kw=args.meter_tolerance,
     )
+    try:
+        prepared = prepare(target, settings)
+    except SetupError as exc:
+        raise SystemExit(str(exc)) from None
+    meter = prepared.subject.get("reference_meter")
+    if meter and meter["same_host_as_ems"]:
+        print("note: the reference meter is read from the EMS's own host — "
+              "it is not independent of the system under test")
 
     async def go() -> list[Result]:
-        if meter is not None:
-            # A reference meter that cannot be read would make every effect
-            # unjudgeable — or, worse, silently judged on nothing: refuse now.
-            try:
-                await meter.connect()
-                float(await meter.read(*meter_point))
-            except Exception as exc:
-                raise SystemExit(f"reference meter {'.'.join(meter_point)} unreadable: "
-                                 f"{describe_error(exc)} — refusing to judge effects with it") from None
-        return await run_dynamic(ctx, only)
+        try:
+            await check_meter(prepared)
+        except SetupError as exc:
+            raise SystemExit(str(exc)) from None
+        return await run_dynamic(prepared.ctx, only)
 
     print(f"grd-sgr run {path.name} — started {utc_now_iso()}"
           + (" — WRITES ENABLED" if args.allow_write else " — read-only"))
     results += asyncio.run(go())
-    subject = {"device_name": eid.device_name, "manufacturer": eid.manufacturer, "eid": path.name,
-               "base_uri": props.get("base_uri", "")}
-    if meter_subject is not None:
-        subject["reference_meter"] = meter_subject
-    if raw is not None:
-        redactor.add(*raw.secrets)
-    return finish(results, subject, args.out, redactor)
+    return finish(results, prepared.subject, args.out, prepared.after_run(), settings.describe())
 
 
 def cmd_tariff_server(args: argparse.Namespace) -> int:
@@ -232,52 +194,30 @@ def cmd_tariff_server(args: argparse.Namespace) -> int:
 
 
 def cmd_tariff_run(args: argparse.Namespace) -> int:
-    from aiohttp import web
 
-    from .evidence import EvidenceClient, offset_from_status
-    from .runner import TariffRunContext, run_tariff_tests
-    from .tariff_server import SCENARIOS, TariffServer
+    from .evidence import EvidenceClient
+    from .runner import run_tariff_campaign, run_tariff_tests
+    from .tariff_server import SCENARIOS
 
     scenarios = [s.strip() for s in args.scenarios.split(",") if s.strip()]
     for s in scenarios:
         if s not in SCENARIOS:
             raise SystemExit(f"unknown scenario {s!r}; choose from {', '.join(SCENARIOS)}")
-    server = TariffServer(scenario=scenarios[0])
     redactor = Redactor()
     evidence = None
     if args.evidence_url:
         headers = parse_headers(args.evidence_header)
         redactor.add(*headers.values())
         evidence = EvidenceClient(args.evidence_url, headers)
-    offset = {"s": 0.0}
 
-    async def go():
-        runner = web.AppRunner(server.app())
-        await runner.setup()
-        await web.TCPSite(runner, args.host, args.port).start()
-        start_seq = 0
-        if evidence is not None:
-            t0 = time.time()
-            status = await evidence.status()
-            start_seq = int(status.get("last_seq") or 0)
-            offset["s"] = offset_from_status(status, (t0 + time.time()) / 2) or 0.0
-        timeline = []
-        try:
-            for s in scenarios:
-                server.scenario = s
-                begin = utc_now_iso()
-                print(f"  serving scenario {s} for {args.dwell}s (point the EMS at http://{args.host}:{args.port}/v1/tariffs)")
-                await asyncio.sleep(args.dwell)
-                timeline.append((s, begin, utc_now_iso()))
-        finally:
-            await runner.cleanup()
-        events = await evidence.all_events(after_seq=start_seq) if evidence is not None else None
-        return timeline, events
+    def announce(scenario: str, _begin: str) -> None:
+        print(f"  serving scenario {scenario} for {args.dwell}s "
+              f"(point the EMS at http://{args.host}:{args.port}/v1/tariffs)")
 
-    timeline, events = asyncio.run(go())
-    ctx = TariffRunContext(server.request_log(), timeline, events, server.oidc, offset["s"])
+    ctx = asyncio.run(run_tariff_campaign(scenarios, args.dwell, args.host, args.port, evidence, announce))
     results = run_tariff_tests(ctx)
-    return finish(results, {"device_name": "EMS under test", "eid": "(tariff client)"}, args.out, redactor)
+    return finish(results, {"device_name": "EMS under test", "eid": "(tariff client)"}, args.out, redactor,
+                  {"tariff_scenarios": scenarios, "dwell_s": args.dwell})
 
 
 def cmd_list(args: argparse.Namespace) -> int:
@@ -339,7 +279,35 @@ def build_parser() -> argparse.ArgumentParser:
 
     ls = sub.add_parser("list-tests", help="print the test catalogue")
     ls.set_defaults(func=cmd_list)
+
+    u = sub.add_parser("ui", help="web interface: compliance tests, audit report, tariffs, grid operator console")
+    u.add_argument("--host", help="address to listen on (default 127.0.0.1; 0.0.0.0 with --expose)")
+    u.add_argument("--port", type=int, default=8770)
+    u.add_argument("--expose", action="store_true", help="listen on every interface (the token is still required)")
+    u.add_argument("--public", action="store_true",
+                   help="hosting behind an HTTPS reverse proxy: no token, --allow-target required")
+    u.add_argument("--allow-target", action="append", default=[],
+                   help="host (or domain suffix) the UI may connect to; limits every EMS, meter and evidence URL")
+    u.add_argument("--allow-host", action="append", default=[],
+                   help="extra Host header name to answer to (the public name behind a reverse proxy)")
+    u.add_argument("--tariff-port", type=int, default=8771, help="port of the tariff server during T runs")
+    u.add_argument("--token", help="access token (default: a random one, printed at start-up)")
+    u.set_defaults(func=cmd_ui)
     return p
+
+
+def cmd_ui(args: argparse.Namespace) -> int:  # pragma: no cover - long-running server
+    from dataclasses import replace
+
+    from .ui import make_config, serve
+
+    host = args.host or ("0.0.0.0" if args.expose else "127.0.0.1")
+    cfg = make_config(host, expose=args.expose, public=args.public, allow_targets=args.allow_target,
+                      allow_hosts=args.allow_host, tariff_port=args.tariff_port)
+    if args.token and not args.public:
+        cfg = replace(cfg, token=args.token)
+    serve(host, args.port, cfg)
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -1,4 +1,4 @@
-"""Keep credentials out of everything the tool prints or writes.
+"""Keep credentials and personal data out of everything the tool prints or writes.
 
 Two layers. At the source, errors are described without their request
 headers (``client.describe_error``). At the exit, every result passes through
@@ -6,6 +6,11 @@ a ``Redactor`` before the console and the reports: the credential values the
 run was given (``env:`` properties, evidence headers), anything that looks
 like ``Bearer …`` / ``Basic …`` (the CommHandler's session token is never
 known to the tool), and credentials embedded in URLs.
+
+Reports also mask the personal data an EMS declares to its grid operator —
+the installation's address, meter number and measuring point (FlexMgmt
+GetSettings). The tests judge the real values; a report meant to be shared
+keeps their shape, not their content.
 """
 
 from __future__ import annotations
@@ -18,8 +23,27 @@ from typing import Any
 from .framework import Result
 
 MASK = "***"
+PERSONAL_MASK = "(personal data, masked)"
+PERSONAL_KEYS = frozenset({"Address", "MeterNumber", "MeasuringPointName"})
 _AUTH_RE = re.compile(r"(?i)\b(bearer|basic)(\s+)[A-Za-z0-9._~+/=-]{4,}")
 _URL_USERINFO_RE = re.compile(r"(?i)\b(https?://)[^/@\s'\"]+@")
+
+
+def mask_personal(value: Any) -> Any:
+    """The same structure, with the values of the personal fields masked."""
+    if isinstance(value, dict):
+        return {k: (_mask_all(v) if k in PERSONAL_KEYS else mask_personal(v)) for k, v in value.items()}
+    if isinstance(value, list):
+        return [mask_personal(v) for v in value]
+    return value
+
+
+def _mask_all(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {k: _mask_all(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_mask_all(v) for v in value]
+    return PERSONAL_MASK if value not in (None, "") else value
 
 
 class Redactor:
@@ -48,7 +72,7 @@ class Redactor:
         return v
 
     def results(self, results: list[Result]) -> list[Result]:
-        """Redacted copies; the originals are left as they are."""
+        """Redacted copies, personal data masked; the originals are left as they are."""
         out = []
         for r in results:
             r = copy.deepcopy(r)
@@ -56,6 +80,6 @@ class Redactor:
             for f in r.findings:
                 f.message = self.text(f.message)
             for o in r.evidence:
-                o.data = self.value(o.data)
+                o.data = mask_personal(self.value(o.data))
             out.append(r)
         return out
