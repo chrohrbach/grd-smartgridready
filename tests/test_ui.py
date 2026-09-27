@@ -703,6 +703,43 @@ async def test_the_end_of_the_session_releases_what_the_player_drove(tmp_path, f
     assert fake_ems.ems.cmd == "NORMAL" and fake_ems.ems.state == "NORMAL"
 
 
+async def test_the_timeline_says_what_the_ems_is_doing_and_when_it_is_gone(sim_ui, fake_ems):
+    fake_ems.ems.applying = False
+    await connected(sim_ui, fake_ems)
+    await timeline(sim_ui)  # the journal is read from here on
+    await post(sim_ui, "/api/sim/send", {"preset": "mode:UniDirFlexLoadMgmt:MAX", "confirm": True})
+    data = await timeline(sim_ui)
+    assert data["reachable"] is True and data["apply_enabled"] is False and data["apply_reason"] == "observe-only"
+    assert data["devices"] == ["heat_pump/sg_ready"]
+    # The EMS stops answering: the page must not keep showing a healthy state.
+    fake_ems.ems.api_key = "rotated"
+    fake_ems.ems._sign = lambda expiry: "nope"  # every token it gave is now refused
+    data = await timeline(sim_ui)
+    assert data["connected"] is True and data["reachable"] is False
+    assert "state_error" in [e["code"] for e in data["events"]]
+
+
+def test_the_hosted_mode_steps_no_faster_than_every_30_s():
+    assert ui_module.make_config("127.0.0.1").min_step_s == 5.0
+    hosted = ui_module.make_config("0.0.0.0", public=True, allow_targets=["example.net"])
+    assert hosted.min_step_s == 30.0
+
+
+async def test_the_player_step_is_clamped_to_the_instance_minimum(tmp_path, fake_ems):
+    client = TestClient(TestServer(create_app(config(tmp_path, min_step_s=30.0))),
+                        cookie_jar=aiohttp.CookieJar(unsafe=True))
+    await client.start_server()
+    try:
+        await connected(client, fake_ems)
+        info = await (await get(client, "/api/info")).json()
+        assert info["min_step_s"] == 30.0
+        resp = await post(client, "/api/sim/start", {"scenario": "stress", "interval_s": 1, "confirm": True})
+        assert (await resp.json())["player"]["interval_s"] == 30.0
+        await post(client, "/api/sim/stop", {})
+    finally:
+        await client.close()
+
+
 def test_every_simulator_text_is_translated_in_every_language():
     from grd_sgr import simulator
 

@@ -107,11 +107,20 @@ Five tabs:
   `RestrictPower`. A command the EID cannot carry is shown disabled, with the
   reason. Tariff and grid-frequency signals are not SGCP commands, so they
   are listed but never sent (the Tariffs tab serves the dynamic tariff).
+  Other writable limits an EID may declare are not offered either:
+  EvChargingHubCurtailment `ActivePowerMaxLoad`, FeedInCurtailment
+  `MaximumFeedInPower` / `ActivePowerMaxFeedIn` and their percentages. Their
+  profiles define no released value, so the simulator could not promise to
+  put them back; use the Console to write them.
+  The timeline also shows when the EMS is observe-only (from its evidence
+  status), which devices it says it commanded, and says so loudly when none of
+  its operating modes can be read back any more.
   The automatic mode runs on the server. It always ends by writing NORMAL and
   releasing the restriction on every point it commanded: when you stop it,
   when the scenario ends, when the page closes or stops polling for 150 s,
   when you disconnect or change the target, and when the process stops.
-  While it plays, no other command is sent to the EMS.
+  While it plays, no other command is sent to the EMS. A step lasts at least
+  5 s, or 30 s on a `--public` instance.
 - **EMS**: load its EID; its configuration values become a form. Add the
   evidence API and a reference meter if you have them.
 - **Compliance**: choose the families and run them. The results appear test by
@@ -142,7 +151,8 @@ In that mode:
   names): the operator's own services next to the EMSs it hosts;
 - only REST EIDs are accepted;
 - every request path must start with `/`;
-- the tariff runs are off, since the EMS would have to reach the host.
+- the tariff runs are off, since the EMS would have to reach the host;
+- the simulator's automatic mode steps no faster than every 30 s.
 
 The reference CommHandler follows HTTP redirects, so an EMS could answer with
 a redirect towards the host's own network. In `--public` mode the process

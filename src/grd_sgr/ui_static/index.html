@@ -52,6 +52,8 @@
 
   <section id="tab-sim" class="tab sim" role="tabpanel">
     <aside class="panel">
+      <p id="sim-action" class="alert" role="status" hidden></p>
+      <p id="sim-observe" class="alert info" hidden></p>
       <h2 data-i18n="sim.h.target">EMS target</h2>
       <div id="sim-target" class="target-box"></div>
       <div class="row">
@@ -59,6 +61,7 @@
         <button type="button" id="sim-disconnect" data-i18n="k.disconnect">Disconnect</button>
       </div>
       <button type="button" id="sim-setup" class="link" data-i18n="sim.setup">Set up the EMS</button>
+      <p class="hint" data-i18n="sim.owner">Only drive an installation you own or are authorised to test.</p>
       <label class="check confirm"><input type="checkbox" id="sim-confirm"> <span data-i18n="sim.confirm">I understand:
         these commands drive the real installation.</span></label>
 
@@ -70,6 +73,7 @@
         <label><span data-i18n="sim.step_s">Step (s)</span> <input type="number" id="auto-interval" value="60" min="5" step="5"></label>
         <label class="check"><input type="checkbox" id="auto-loop" checked> <span data-i18n="sim.loop_lbl">Loop</span></label>
       </div>
+      <p id="auto-step-hint" class="hint"></p>
       <div class="row">
         <button type="button" id="auto-start" class="primary" data-i18n="sim.start">Start</button>
         <button type="button" id="auto-stop" class="danger" data-i18n="sim.stop">Stop</button>
@@ -108,8 +112,9 @@
     </aside>
 
     <div class="feed">
-      <div id="statusbar" class="statusbar"></div>
-      <div class="legend">
+      <p id="sim-idle" class="empty" data-i18n="sim.idle">Connect to the EMS to get started.</p>
+      <div id="statusbar" class="statusbar" hidden></div>
+      <div id="legend" class="legend" hidden>
         <span><i class="dot grd"></i><span data-i18n="sim.legend.grd">GRD action</span></span>
         <span><i class="dot ems"></i><span data-i18n="sim.legend.ems">EMS reaction</span></span>
         <span><i class="dot err"></i><span data-i18n="sim.legend.err">Error</span></span>
@@ -117,7 +122,7 @@
         <button type="button" id="sim-refresh" class="small" data-i18n="sim.refresh">Refresh now</button>
       </div>
       <ol id="timeline" class="timeline" aria-live="polite"></ol>
-      <p id="timeline-empty" class="empty" data-i18n="sim.empty">No events yet.</p>
+      <p id="timeline-empty" class="empty" data-i18n="sim.empty" hidden>No events yet.</p>
     </div>
   </section>
 

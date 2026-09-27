@@ -72,6 +72,12 @@ gains a web interface, and every run gives an audit report.
   - a timeline of the commands sent beside the EMS's reactions (evidence
     journal, with applied / observed / deferred / not applied badges) and the
     states read back;
+  - from the hosted casasmooth page: a feedback banner for every action, an
+    idle hint until connected, an "EMS unreachable" alarm when no operating
+    mode can be read back, the EMS's observe-only mode (from the evidence
+    status) and the devices it says it commanded;
+  - the automatic mode steps at least every 5 s, every 30 s in `--public`
+    mode (said in the interface);
   - new endpoints `/api/sim/send`, `/api/sim/release`, `/api/sim/start`,
     `/api/sim/stop` and `/api/sim/timeline`. Each command needs the same
     confirmation as the console.

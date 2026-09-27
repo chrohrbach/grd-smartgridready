@@ -227,6 +227,10 @@ class SimState:
     state_errors: dict[str, str] = field(default_factory=dict)
     sent: int = 0
     player: Player | None = None
+    reachable: bool | None = None  # False: no operating mode could be read back
+    apply_enabled: bool | None = None  # from the evidence status: False is observe-only
+    apply_reason: str = ""
+    devices: list[str] = field(default_factory=list)  # devices the EMS said it commanded
 
     def add(self, side: str, code: str, params: dict[str, Any] | None = None, *, badge: str | None = None,
             data: Any = None) -> dict[str, Any]:
@@ -935,6 +939,7 @@ async def api_console_connect(request: web.Request) -> web.Response:
                       "silently in the CommHandler): " + points[0]["error"], detail=points[0]["error"])
     s.sim.ev_cursor, s.sim.evidence, s.sim.evidence_error, s.sim.reaction_s = None, "unknown", "", None
     s.sim.states, s.sim.state_errors, s.sim.last_read = {}, {}, 0.0
+    s.sim.reachable, s.sim.apply_enabled, s.sim.apply_reason, s.sim.devices = None, None, "", []
     s.sim.add("info", "connected", {"device": redactor.text(parse_eid(s.target.eid_path).device_name)})
     return web.json_response({"connected": True, "points": points, "warnings": [
         redactor.text(w) for w in device.connect_warnings]})
@@ -1220,10 +1225,12 @@ async def _sim_observe(s: Session) -> None:
     if console is None:
         return
     caps = _caps(s.target)
+    tried = read = 0
     for mp in caps.modes:
         if mp.state is None:
             continue
         point = f"{mp.fp}.{mp.state}"
+        tried += 1
         try:
             value = console.redactor.value(_read_json_text(await console.device.read(mp.fp, mp.state)))
         except Exception as exc:
@@ -1232,18 +1239,25 @@ async def _sim_observe(s: Session) -> None:
                 s.sim.state_errors[point] = error
                 s.sim.add("err", "state_error", {"point": point, "error": error})
             continue
+        read += 1
         s.sim.state_errors.pop(point, None)
         if point not in s.sim.states or s.sim.states[point] != value:
             s.sim.states[point] = value
             s.sim.add("ems", "state", {"point": point, "value": str(value)})
+    # Nothing read back: what the page shows is no longer the EMS's state.
+    s.sim.reachable = None if not tried else read > 0
     del console.device.calls[:-200]
     evidence = s.target.evidence()
     if evidence is None:
         s.sim.evidence = "none"
         return
     try:
+        # The status each time: observe-only can be switched on and off.
+        status = await evidence.status()
+        applying = status.get("apply_enabled")
+        s.sim.apply_enabled = applying if isinstance(applying, bool) else None
+        s.sim.apply_reason = console.redactor.text(str(status.get("not_applying_reason") or ""))[:200]
         if s.sim.ev_cursor is None:
-            status = await evidence.status()
             s.sim.ev_cursor = int(status.get("last_seq") or 0)
             declared = status.get("declared") or {}
             reaction = declared.get("reaction_time_s") if isinstance(declared, dict) else None
@@ -1261,6 +1275,9 @@ async def _sim_observe(s: Session) -> None:
         raw = console.redactor.value(e.__dict__)
         side, code, badge, params = sim.evidence_event(raw)
         s.sim.add(side, code, params, badge=badge, data=raw)
+        device = raw.get("device") if e.kind == "device_command" else None
+        if device and str(device) not in s.sim.devices:
+            s.sim.devices = (s.sim.devices + [str(device)[:80]])[-20:]
 
 
 async def api_sim_timeline(request: web.Request) -> web.Response:
@@ -1286,6 +1303,8 @@ async def api_sim_timeline(request: web.Request) -> web.Response:
         "connected": s.console is not None, "events": events, "last_id": s.sim.next_id - 1,
         "player": s.sim.player.view() if s.sim.player else None, "states": s.sim.states,
         "evidence": s.sim.evidence, "reaction_s": s.sim.reaction_s, "sent": s.sim.sent, "polled_utc": utc_now_iso(),
+        "reachable": s.sim.reachable if s.console is not None else None, "apply_enabled": s.sim.apply_enabled,
+        "apply_reason": s.sim.apply_reason, "devices": s.sim.devices,
     })
 
 
@@ -1367,6 +1386,9 @@ def make_config(host: str, *, expose: bool = False, public: bool = False,
     if public and not targets:
         raise SystemExit("--public needs --allow-target: the hosts this instance may reach")
     return UiConfig(
+        # Hosted: a scenario step at most every 30 s, so that a visitor cannot
+        # make the instance hammer an EMS; 5 s is fine on one's own bench.
+        min_step_s=30.0 if public else 5.0,
         token=None if public else secrets.token_urlsafe(24),
         allowed_hosts=frozenset(hosts), allowed_targets=targets,
         denied_targets=tuple(d.lower().strip().lstrip(".").rstrip(".") for d in deny_targets or [] if d.strip()),

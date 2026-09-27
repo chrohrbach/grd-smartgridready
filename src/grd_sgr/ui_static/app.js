@@ -608,6 +608,12 @@ function setConnected(on, failed) {
   const pill = $("#conn");
   pill.className = failed ? "conn bad" : on ? "conn ok" : "conn";
   msg(pill, failed ? "sim.conn.error" : on ? "sim.conn.on" : "sim.conn.off");
+  // Not connected: an idle hint instead of a status that would look live.
+  $("#sim-idle").hidden = on;
+  $("#statusbar").hidden = !on;
+  $("#legend").hidden = !on;
+  $("#timeline-empty").hidden = !on || $("#timeline").children.length > 0;
+  if (!on) { $("#sim-observe").hidden = true; $("#reaction").hidden = true; }
   renderSimButtons();
 }
 
@@ -688,7 +694,12 @@ function renderScenarios(info) {
   const available = info ? info.scenarios.filter((x) => x.available).map((x) => x.id) : [];
   select.value = available.includes(previous) ? previous : available[0] || "";
   const step = $("#auto-interval");
-  if (state.info) { step.min = String(state.info.min_step_s); step.max = String(state.info.max_step_s); }
+  if (state.info) {
+    step.min = String(state.info.min_step_s);
+    step.max = String(state.info.max_step_s);
+    if (Number(step.value) < state.info.min_step_s) step.value = String(state.info.min_step_s);
+    msg($("#auto-step-hint"), "sim.hint.step", { s: state.info.min_step_s });
+  }
 }
 
 function fillSelect(select, values) {
@@ -737,15 +748,39 @@ function customCommand() {
     minutes: Number($("#c-minutes").value) };
 }
 
+// The feedback banner of the simulator's panel: every action says what came
+// of it, next to the button that was pressed (a refusal is never silent).
+function banner(kind, key, params) {
+  const node = $("#sim-action");
+  node.className = `alert ${kind}`;
+  msg(node, key, params);
+  node.hidden = false;
+}
+
+function bannerError(error) {
+  const node = $("#sim-action");
+  node.className = "alert error";
+  showError(node, error);
+  node.hidden = false;
+  if (error instanceof ApiError && error.code === "console_not_connected") setConnected(false);
+}
+
+const ACTION_OK = { "/api/sim/send": "sim.ok.sent", "/api/sim/release": "sim.ok.released",
+  "/api/sim/start": "sim.ok.started" };
+
 // A command to the EMS: every one carries the page's confirmation, which the
-// server checks. True when it was accepted by the server.
+// server checks. True when the server accepted it and the EMS took every write.
 async function simAction(path, body) {
   flash(null);
   try {
-    await api(path, { method: "POST", body: { ...body, confirm: $("#sim-confirm").checked } });
+    const data = await api(path, { method: "POST", body: { ...body, confirm: $("#sim-confirm").checked } });
+    const failed = ((data && data.writes) || []).find((w) => !w.ok);
+    if (failed) { banner("error", "sim.fail.write", { error: failed.error || "—" }); return false; }
+    if (data && data.released === false) { banner("error", "sim.fail.write", { error: "—" }); return false; }
+    banner("success", ACTION_OK[path] || "sim.ok.sent");
     return true;
   } catch (error) {
-    flash(error);
+    bannerError(error);
     return false;
   } finally {
     simPoll(true);
@@ -760,7 +795,10 @@ async function startPlayer() {
 async function stopPlayer() {
   flash(null);
   $("#auto-stop").disabled = true;
-  try { await api("/api/sim/stop", { method: "POST", body: {} }); } catch (error) { flash(error); }
+  try {
+    await api("/api/sim/stop", { method: "POST", body: {} });
+    banner("success", "sim.ok.stopped");
+  } catch (error) { bannerError(error); }
   simPoll(true);
 }
 
@@ -795,12 +833,33 @@ function renderStatus(data) {
   for (const [point, value] of Object.entries(data.states || {})) {
     chips.push(chip({ text: point }, value, null, before[point] !== undefined && before[point] !== value));
   }
+  if (typeof data.apply_enabled === "boolean") {
+    const mode = chip({ i18n: "sim.chip.mode" }, { i18n: data.apply_enabled ? "sim.mode.apply" : "sim.mode.observe" });
+    mode.lastChild.classList.add(data.apply_enabled ? "apply" : "observe");
+    chips.push(mode);
+  }
   chips.push(chip({ i18n: "sim.chip.evidence" }, { i18n: `sim.evidence.${data.evidence || "unknown"}` }));
   chips.push(chip({ i18n: "sim.chip.sent" }, data.sent || 0));
   const p = data.player;
   chips.push(chip({ i18n: "sim.chip.player" }, p && p.running ? { i18n: `sim.sc.${p.scenario}` } : { i18n: "sim.auto.stopped" }));
   chips.push(chip({ i18n: "sim.chip.poll" }, data.polled_utc ? fmtTime(data.polled_utc) : "—"));
+  if (data.devices && data.devices.length) {
+    chips.push(el("div", { class: "chip wide" }, el("div", { class: "k", i18n: "sim.chip.devices" }),
+      el("div", { class: "claims" }, ...data.devices.map((d) => el("span", { text: d })))));
+  }
   bar.replaceChildren(...chips);
+  // What the old hosted page learnt the hard way: an answer from this tool is
+  // not an answer from the EMS. Nothing read back: say so, loudly.
+  if (data.connected && data.reachable === false) {
+    setConnected(true, true);
+    banner("error", "sim.unreachable");
+  } else if (data.connected && $("#conn").classList.contains("bad")) {
+    setConnected(true);
+    if ($("#sim-action").dataset.i18n === "sim.unreachable") $("#sim-action").hidden = true;
+  }
+  const observe = $("#sim-observe");
+  observe.hidden = !(data.connected && data.apply_enabled === false);
+  if (!observe.hidden) msg(observe, "sim.observe_banner", { reason: data.apply_reason || "" });
   const reaction = $("#reaction");
   reaction.hidden = !(typeof data.reaction_s === "number");
   if (!reaction.hidden) msg(reaction, "sim.reaction", { s: data.reaction_s });
@@ -845,7 +904,7 @@ function renderTimeline(events) {
     state.simLastId = event.id;
   }
   while (list.children.length > SIM_EVENTS_SHOWN) list.lastChild.remove();
-  $("#timeline-empty").hidden = list.children.length > 0;
+  $("#timeline-empty").hidden = !state.connected || list.children.length > 0;
 }
 
 // One poll of the timeline, then the next one scheduled: every 3 s while
