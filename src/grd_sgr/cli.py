@@ -288,6 +288,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="hosting behind an HTTPS reverse proxy: no token, --allow-target required")
     u.add_argument("--allow-target", action="append", default=[],
                    help="host (or domain suffix) the UI may connect to; limits every EMS, meter and evidence URL")
+    u.add_argument("--deny-target", action="append", default=[],
+                   help="exact host name refused even inside an allowed domain: the operator's own services")
     u.add_argument("--allow-host", action="append", default=[],
                    help="extra Host header name to answer to (the public name behind a reverse proxy)")
     u.add_argument("--tariff-port", type=int, default=8771, help="port of the tariff server during T runs")
@@ -303,7 +305,8 @@ def cmd_ui(args: argparse.Namespace) -> int:  # pragma: no cover - long-running 
 
     host = args.host or ("0.0.0.0" if args.expose else "127.0.0.1")
     cfg = make_config(host, expose=args.expose, public=args.public, allow_targets=args.allow_target,
-                      allow_hosts=args.allow_host, tariff_port=args.tariff_port)
+                      allow_hosts=args.allow_host, tariff_port=args.tariff_port,
+                      deny_targets=args.deny_target)
     if args.token and not args.public:
         cfg = replace(cfg, token=args.token)
     if args.public:
@@ -311,7 +314,7 @@ def cmd_ui(args: argparse.Namespace) -> int:  # pragma: no cover - long-running 
         # holds it where the connections are made, redirects included.
         from . import egress
 
-        egress.install(cfg.allowed_targets or ())
+        egress.install(cfg.allowed_targets or (), cfg.denied_targets)
         if sys.platform == "win32":
             # the proactor loop connects without socket.connect, past the guard
             import asyncio

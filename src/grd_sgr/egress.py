@@ -26,6 +26,7 @@ import socket
 from collections.abc import Iterable
 
 _installed: tuple[str, ...] | None = None
+_denied: tuple[str, ...] = ()
 _original_getaddrinfo = socket.getaddrinfo
 _original_connect = socket.socket.connect
 _original_connect_ex = socket.socket.connect_ex
@@ -64,9 +65,12 @@ def _guarded_getaddrinfo(host, *args, **kwargs):
     allowed = _installed
     if allowed is not None and host is not None:
         name = host.decode() if isinstance(host, bytes) else str(host)
-        if not _is_ip(name) and name.lower() != "localhost" and not _name_allowed(name, allowed):
-            raise EgressRefused(f"hosted instance: {name} is not under an allowed domain "
-                                f"({', '.join(allowed)})")
+        if not _is_ip(name) and name.lower() != "localhost":
+            if name.lower().rstrip(".") in _denied:
+                raise EgressRefused(f"hosted instance: {name} is refused (--deny-target)")
+            if not _name_allowed(name, allowed):
+                raise EgressRefused(f"hosted instance: {name} is not under an allowed domain "
+                                    f"({', '.join(allowed)})")
     return _original_getaddrinfo(host, *args, **kwargs)
 
 
@@ -94,14 +98,16 @@ def _guarded_connect_ex(self, address):
     return _original_connect_ex(self, address)
 
 
-def install(allowed_domains: Iterable[str]) -> None:
+def install(allowed_domains: Iterable[str], denied_names: Iterable[str] = ()) -> None:
     """Limit every outbound connection of this process. Idempotent; the last
-    call's domains apply."""
-    global _installed
+    call's domains apply. ``denied_names`` are exact names refused inside an
+    allowed domain: the operator's own services next to the targets."""
+    global _installed, _denied
     domains = tuple(d.lower().strip().lstrip(".").rstrip(".") for d in allowed_domains if d.strip())
     if not domains:
         raise ValueError("egress guard needs at least one allowed domain")
     _installed = domains
+    _denied = tuple(d.lower().strip().rstrip(".") for d in denied_names if d.strip())
     socket.getaddrinfo = _guarded_getaddrinfo
     socket.socket.connect = _guarded_connect
     socket.socket.connect_ex = _guarded_connect_ex
@@ -109,8 +115,9 @@ def install(allowed_domains: Iterable[str]) -> None:
 
 def uninstall() -> None:
     """Remove the guard (tests)."""
-    global _installed
+    global _installed, _denied
     _installed = None
+    _denied = ()
     socket.getaddrinfo = _original_getaddrinfo
     socket.socket.connect = _original_connect
     socket.socket.connect_ex = _original_connect_ex

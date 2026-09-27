@@ -114,10 +114,13 @@ required. `--public` serves it behind an HTTPS reverse proxy without a token.
 It then requires `--allow-target`: the only hosts it may connect to.
 
 ```bash
-grd-sgr ui --public --allow-target example.net --allow-host bench.example.net
+grd-sgr ui --public --allow-target example.net --allow-host bench.example.net \
+  --deny-target example.net --deny-target api.example.net
 ```
 
 In that mode:
+- `--deny-target` names hosts refused even inside an allowed domain (exact
+  names): the operator's own services next to the EMSs it hosts;
 - only REST EIDs are accepted;
 - every request path must start with `/`;
 - the tariff runs are off, since the EMS would have to reach the host.

@@ -130,6 +130,17 @@ def test_uninstall_restores_the_socket_module():
     egress.install(["example.test"])
 
 
+def test_a_denied_name_inside_an_allowed_domain_does_not_resolve():
+    egress.install(["example.test"], ["api.example.test", "example.test"])
+    with pytest.raises(egress.EgressRefused, match="deny-target"):
+        socket.getaddrinfo("api.example.test", 443)
+    with pytest.raises(egress.EgressRefused, match="deny-target"):
+        socket.getaddrinfo("example.test", 443)  # the apex only, not its subdomains
+    with pytest.raises(OSError) as exc:
+        socket.getaddrinfo("box.example.test", 443)
+    assert not isinstance(exc.value, egress.EgressRefused)
+
+
 def test_install_needs_a_domain():
     with pytest.raises(ValueError):
         egress.install([])

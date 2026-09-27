@@ -90,6 +90,7 @@ class UiConfig:
     allowed_hosts: frozenset[str]  # Host header names this instance answers to
     allowed_targets: tuple[str, ...] | None  # host suffixes the UI may reach; None: any
     workdir: Path
+    denied_targets: tuple[str, ...] = ()  # exact names refused inside an allowed domain
     tariff_bind: str = "127.0.0.1"
     tariff_port: int = 8771
     secure_cookies: bool = False
@@ -235,7 +236,7 @@ def _safe_name(name: str | None, default: str) -> str:
     return base if base.lower().endswith(".xml") else base + ".xml"
 
 
-def _host_allowed(url: str, allowed: tuple[str, ...]) -> bool:
+def _host_allowed(url: str, allowed: tuple[str, ...], denied: tuple[str, ...] = ()) -> bool:
     try:
         parts = urlsplit(url.strip())
     except ValueError:
@@ -243,6 +244,8 @@ def _host_allowed(url: str, allowed: tuple[str, ...]) -> bool:
     if parts.scheme not in ("http", "https") or not parts.hostname or parts.username or parts.password:
         return False
     host = parts.hostname.lower().rstrip(".")
+    if host in denied:
+        return False
     return any(host == a or host.endswith("." + a) for a in allowed)
 
 
@@ -258,7 +261,7 @@ def _check_reach(cfg: UiConfig, raw_text: str, props: dict[str, str], what: str)
         raise Refused(400, f"{what}: this hosted instance tests REST interfaces only")
     desc = eid.rest_description()
     uri = (desc.findtext(f"{NS}restApiUri") or "").strip() if desc is not None else ""
-    if not _host_allowed(uri, cfg.allowed_targets):
+    if not _host_allowed(uri, cfg.allowed_targets, cfg.denied_targets):
         raise Refused(400, f"{what}: the address {uri or '(none)'} is not one this instance may reach "
                            f"({', '.join(cfg.allowed_targets)})")
     for el in ET.fromstring(text).iter(f"{NS}requestPath"):
@@ -509,7 +512,8 @@ async def api_target_post(request: web.Request) -> web.Response:
             value = prev.evidence_headers[name]
         if name and value:
             target.evidence_headers = {name: value}
-        if cfg.allowed_targets is not None and not _host_allowed(target.evidence_url, cfg.allowed_targets):
+        if cfg.allowed_targets is not None and not _host_allowed(target.evidence_url, cfg.allowed_targets,
+                                                                 cfg.denied_targets):
             raise Refused(400, "evidence API: this address is not one this instance may reach")
 
     meter = body.get("meter")
@@ -920,7 +924,8 @@ def _machine_names() -> set[str]:
 
 def make_config(host: str, *, expose: bool = False, public: bool = False,
                 allow_targets: list[str] | None = None, allow_hosts: list[str] | None = None,
-                tariff_port: int = 8771, secure_cookies: bool | None = None) -> UiConfig:
+                tariff_port: int = 8771, secure_cookies: bool | None = None,
+                deny_targets: list[str] | None = None) -> UiConfig:
     hosts = set(LOCAL_HOSTS) | {h.lower() for h in allow_hosts or []}
     if host not in ("0.0.0.0", "::", ""):
         hosts.add(host.lower())
@@ -932,6 +937,7 @@ def make_config(host: str, *, expose: bool = False, public: bool = False,
     return UiConfig(
         token=None if public else secrets.token_urlsafe(24),
         allowed_hosts=frozenset(hosts), allowed_targets=targets,
+        denied_targets=tuple(d.lower().strip().lstrip(".").rstrip(".") for d in deny_targets or [] if d.strip()),
         workdir=Path(tempfile.mkdtemp(prefix="grd-sgr-ui-")),
         tariff_bind="0.0.0.0" if expose else "127.0.0.1", tariff_port=tariff_port,
         secure_cookies=public if secure_cookies is None else secure_cookies,

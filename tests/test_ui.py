@@ -300,6 +300,25 @@ async def test_public_mode_reaches_only_the_allowed_hosts(tmp_path):
         await client.close()
 
 
+async def test_public_mode_refuses_the_denied_names_inside_an_allowed_domain(tmp_path):
+    cfg = config(tmp_path, token=None, allowed_targets=("casasmooth.net",),
+                 denied_targets=("api.casasmooth.net", "casasmooth.net"))
+    client = TestClient(TestServer(create_app(cfg)), cookie_jar=aiohttp.CookieJar(unsafe=True))
+    await client.start_server()
+    try:
+        headers = {CSRF_HEADER: CSRF_VALUE}
+        eid = {"name": "ems.xml", "xml": EXAMPLE_XML}
+        for base in ("https://api.casasmooth.net", "https://casasmooth.net"):
+            denied = await client.post("/api/target", json={"eid": eid, "props": {"base_uri": base, "api_key": "k"}},
+                                       headers=headers)
+            assert denied.status == 400, base
+        box = await client.post("/api/target", json={"eid": eid, "props": {
+            "base_uri": "https://box-42.casasmooth.net", "api_key": "k"}}, headers=headers)
+        assert box.status == 200
+    finally:
+        await client.close()
+
+
 def test_public_mode_without_targets_is_refused(tmp_path):
     with pytest.raises(ValueError, match="allow-target"):
         create_app(config(tmp_path, token=None, allowed_targets=None))
