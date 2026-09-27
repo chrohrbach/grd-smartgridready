@@ -941,6 +941,7 @@ async def api_console_connect(request: web.Request) -> web.Response:
     s.sim.states, s.sim.state_errors, s.sim.last_read = {}, {}, 0.0
     s.sim.reachable, s.sim.apply_enabled, s.sim.apply_reason, s.sim.devices = None, None, "", []
     s.sim.add("info", "connected", {"device": redactor.text(parse_eid(s.target.eid_path).device_name)})
+    await _evidence_baseline(s)
     return web.json_response({"connected": True, "points": points, "warnings": [
         redactor.text(w) for w in device.connect_warnings]})
 
@@ -1015,11 +1016,32 @@ def _may_command(s: Session) -> None:
         raise Refused(409, "player_running", "a scenario is playing; stop it first")
 
 
+async def _evidence_baseline(s: Session) -> None:
+    """Fix where the timeline starts reading the EMS's journal, BEFORE the first
+    command. It used to be fixed at the first timeline poll; a scenario sends its
+    first step as soon as it starts, so the EMS journalled that step before the
+    baseline and its reaction never reached the timeline (seen on a real box,
+    27.09.2026). Best effort: an unreachable journal leaves the baseline to the
+    next poll, as before."""
+    if s.sim.ev_cursor is not None or s.target is None:
+        return
+    evidence = s.target.evidence()
+    if evidence is None:
+        return
+    with contextlib.suppress(Exception):
+        status = await evidence.status()
+        s.sim.ev_cursor = int(status.get("last_seq") or 0)
+        declared = status.get("declared") or {}
+        reaction = declared.get("reaction_time_s") if isinstance(declared, dict) else None
+        s.sim.reaction_s = float(reaction) if isinstance(reaction, (int, float)) else None
+
+
 async def _command(s: Session, fp: str, dp: str, value: Any, origin: str, player: Player | None = None,
                    code: str | None = None, params: dict[str, Any] | None = None) -> dict[str, Any]:
     """Send one command through the CommHandler, and record it in the console's
     log and on the timeline. A failure is recorded, not raised."""
     console = _console(s)
+    await _evidence_baseline(s)
     shown = console.redactor.value(value)
     entry: dict[str, Any] = {"ts": utc_now_iso(), "fp": fp, "dp": dp, "value": shown, "origin": origin}
     async with s.write_lock:

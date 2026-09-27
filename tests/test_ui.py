@@ -577,6 +577,19 @@ async def test_the_target_carries_what_the_simulator_may_send(ui, fake_ems):
     assert quiet["connected"] is False and quiet["events"] == [] and quiet["player"] is None
 
 
+async def test_a_command_sent_before_the_first_poll_still_shows_its_reaction(sim_ui, fake_ems):
+    """Seen on a real box (27.09.2026): a scenario sends its first step as soon
+    as it starts, before the page polls the timeline. The journal baseline was
+    fixed at that first poll — after the EMS had journalled the step — so the
+    reaction to the first command never reached the timeline."""
+    await connected(sim_ui, fake_ems)
+    resp = await post(sim_ui, "/api/sim/send", {"preset": "mode:UniDirFlexLoadMgmt:LOCKED", "confirm": True})
+    assert resp.status == 200 and fake_ems.ems.state == "LOCKED"
+    codes = [(e["side"], e["code"]) for e in (await timeline(sim_ui))["events"]]
+    assert ("grd", "cmd_mode") in codes
+    assert ("ems", "ev_external_command") in codes, codes
+
+
 async def test_a_preset_shows_the_command_and_the_ems_reaction_on_the_timeline(sim_ui, fake_ems):
     fake_ems.ems.api_key = "s3cr3t-api-key"
     await connected(sim_ui, fake_ems)
