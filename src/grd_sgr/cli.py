@@ -306,6 +306,17 @@ def cmd_ui(args: argparse.Namespace) -> int:  # pragma: no cover - long-running 
                       allow_hosts=args.allow_host, tariff_port=args.tariff_port)
     if args.token and not args.public:
         cfg = replace(cfg, token=args.token)
+    if args.public:
+        # --allow-target is checked on the EID a visitor submits; the guard
+        # holds it where the connections are made, redirects included.
+        from . import egress
+
+        egress.install(cfg.allowed_targets or ())
+        if sys.platform == "win32":
+            # the proactor loop connects without socket.connect, past the guard
+            import asyncio
+
+            asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     serve(host, args.port, cfg)
     return 0
 

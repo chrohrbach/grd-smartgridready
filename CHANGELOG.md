@@ -32,7 +32,10 @@ gains a web interface, and every run gives an audit report.
     - state changes need a custom header (CSRF);
     - writes need an explicit confirmation;
     - credentials never reach the browser;
-    - a strict Content-Security-Policy is sent.
+    - a strict Content-Security-Policy is sent;
+    - in `--public` mode, an outbound guard in the process: only names under
+      an allowed domain resolve, and only public addresses are reached, so a
+      redirect from the EMS cannot lead the instance into the host's network.
 - The audit report, `report.html`, for the CLI and the interface alike. It
   gives the scope, the method, every verdict with its clause, findings and raw
   evidence, and the limits of the run. It quotes the SHA-256 of the

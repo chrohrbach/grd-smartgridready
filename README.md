@@ -122,10 +122,17 @@ In that mode:
 - every request path must start with `/`;
 - the tariff runs are off, since the EMS would have to reach the host.
 
-The reference CommHandler follows HTTP redirects. A hosted instance must
-therefore run with its outbound traffic limited to the allowed targets, so
-that an EMS answering with a redirect cannot lead it into the host's own
-network.
+The reference CommHandler follows HTTP redirects, so an EMS could answer with
+a redirect towards the host's own network. In `--public` mode the process
+guards its own outbound connections, redirects included:
+- only names under an `--allow-target` domain are resolved;
+- only public addresses are reached: a private, link-local or metadata
+  address is refused, whether it comes from DNS or from an IP literal.
+
+This guard needs no privilege on the host. It relies on a selector event loop
+(the default on Linux; forced on Windows) and on the standard resolver: do not
+install `aiodns` next to a hosted instance. A firewall on the host remains a
+good second layer.
 
 ## What is tested, and what cannot be
 
