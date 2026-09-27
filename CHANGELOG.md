@@ -49,6 +49,12 @@ gains a web interface, and every run gives an audit report.
 - The report names the reference meter and says when it is read from the EMS's
   own host. Judged on the EMS's own `Metering` point, the effect is measured by
   the system under test itself.
+- The web interface in English, French, German and Italian, with a language
+  switch in the header (`?lang=`, else the choice remembered, else the
+  browser's language). Test titles are translated in the interface; the audit
+  report stays in English. Refusals from the server carry a stable `code`
+  (and `params`) next to the English `error`, so the interface can translate
+  them.
 - `CONTRIBUTING.md` (Developer Certificate of Origin) and `SECURITY.md`.
 
 ### Fixed

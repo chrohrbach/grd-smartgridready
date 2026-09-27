@@ -7,17 +7,20 @@ CLI's own end-to-end tests.
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import hashlib
 import json
 import re
 import socket
+from pathlib import Path
 
 import aiohttp
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 from conftest import EXAMPLE_EID
 
+from grd_sgr import ui as ui_module
 from grd_sgr.framework import Finding, Result, Verdict
 from grd_sgr.report import render_html, run_metadata
 from grd_sgr.ui import CSRF_HEADER, CSRF_VALUE, REPORT_CSP, TOKEN_HEADER, UiConfig, create_app
@@ -346,3 +349,107 @@ def test_the_audit_report_escapes_what_the_ems_says():
     meta = run_metadata({"device_name": hostile, "manufacturer": hostile, "eid": "x.xml"})
     html = render_html([result], meta, "0" * 64)
     assert "<script>" not in html and "&lt;script&gt;" in html
+
+
+# -- languages ------------------------------------------------------------------------------
+
+LANGS = ("en", "fr", "de", "it")
+STATIC = Path(ui_module.__file__).parent / "ui_static"
+PLACEHOLDER = re.compile(r"\{(\w+)\}")
+
+
+def i18n_strings() -> dict[str, dict[str, str]]:
+    text = (STATIC / "i18n.js").read_text(encoding="utf-8")
+    body = text.split("window.GRD_I18N = ", 1)[1].rstrip().removesuffix(";")
+    return json.loads(body)["strings"]
+
+
+def test_every_language_has_every_string_with_the_same_placeholders():
+    strings = i18n_strings()
+    assert set(strings) == set(LANGS)
+    en = strings["en"]
+    for lang in LANGS:
+        assert set(strings[lang]) == set(en), lang
+        for key, text in strings[lang].items():
+            assert text.strip(), (lang, key)
+            assert set(PLACEHOLDER.findall(text)) == set(PLACEHOLDER.findall(en[key])), (lang, key)
+            assert text.count("`") == en[key].count("`"), (lang, key)
+    assert not [k for k, v in strings["de"].items() if "ß" in v]  # Swiss German writes "ss"
+
+
+def test_every_key_the_page_uses_is_translated():
+    en = i18n_strings()["en"]
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    used = set(re.findall(r'data-i18n="([^"]+)"', html))
+    for spec in re.findall(r'data-i18n-attr="([^"]+)"', html):
+        used |= {pair.split(":", 1)[1].strip() for pair in spec.split(";") if ":" in pair}
+    assert len(used) > 50
+    js = (STATIC / "app.js").read_text(encoding="utf-8")
+    prefixes = "|".join(sorted({re.escape(k.split(".")[0]) for k in en if "." in k}))
+    in_js = set(re.findall(rf"""["'`]((?:{prefixes})\.[\w.]+)["'`]""", js))
+    assert {"k.connected", "rep.note", "status.ready"} <= in_js
+    used |= in_js
+    # Keys the script builds from a value the server gives.
+    for family, values in {"run": ("running", "done", "failed", "cancelled"),
+                           "st": ("running", "done", "failed", "cancelled"),
+                           "kind": ("compliance", "tariffs"), "subject": tuple(ui_module.SUBJECTS),
+                           "notice": ("tariff_notice",)}.items():
+        assert f"`{family}.${{" in js, family
+        used |= {f"{family}.{v}" for v in values}
+    assert not sorted(used - set(en))
+
+
+def test_every_test_title_is_translated_and_english_is_the_registry():
+    from grd_sgr.framework import REGISTRY
+
+    en = i18n_strings()["en"]
+    assert {k.removeprefix("test.") for k in en if k.startswith("test.")} == set(REGISTRY)
+    for test_id, case in REGISTRY.items():
+        assert en[f"test.{test_id}"] == case.title, test_id
+
+
+def _refusals() -> list[tuple[str, set[str]]]:
+    tree = ast.parse(Path(ui_module.__file__).read_text(encoding="utf-8"))
+    found = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "Refused":
+            assert len(node.args) >= 3, f"line {node.lineno}: Refused(status, code, message, **params)"
+            code = node.args[1]
+            assert isinstance(code, ast.Constant) and isinstance(code.value, str), f"line {node.lineno}"
+            found.append((code.value, {k.arg for k in node.keywords}))
+    return found
+
+
+def test_every_refusal_carries_a_code_translated_in_every_language():
+    strings = i18n_strings()
+    refusals = _refusals() + [("csrf_header", {"header"})]
+    assert len(refusals) > 30
+    for code, params in refusals:
+        for lang in LANGS:
+            text = strings[lang].get(f"err.{code}")
+            assert text, (lang, code)
+            assert set(PLACEHOLDER.findall(text)) == params, (lang, code)
+
+
+async def test_a_refusal_gives_its_code_next_to_the_english_text(ui):
+    resp = await post(ui, "/api/target", {"eid": {"name": "x.xml", "xml": "<nope/>"}})
+    data = await resp.json()
+    assert resp.status == 400 and data["code"] == "eid_unreadable"
+    assert data["error"].startswith("ems: not a readable EID") and data["params"]["subject"] == "ems"
+    csrf = await ui.post("/api/target", json={}, headers={TOKEN_HEADER: TOKEN})
+    assert (await csrf.json())["code"] == "csrf_header"
+
+
+async def test_the_strings_are_served_as_a_script_under_the_csp(ui):
+    resp = await ui.get("/i18n.js", headers={TOKEN_HEADER: TOKEN})
+    assert resp.status == 200 and resp.headers["Content-Type"].startswith("text/javascript")
+    assert "script-src 'self'" in resp.headers["Content-Security-Policy"]
+    assert resp.headers["X-Content-Type-Options"] == "nosniff"
+    assert "window.GRD_I18N" in await resp.text()
+    page = await (await ui.get("/", headers={TOKEN_HEADER: TOKEN})).text()
+    assert '<script src="/i18n.js" defer></script>' in page
+    assert not re.findall(r"<script(?![^>]*\ssrc=)", page)  # no inline script
+    assert not re.findall(r"\son[a-z]+=", page)  # no inline handler
+    for name in ("app.js", "i18n.js"):
+        source = (STATIC / name).read_text(encoding="utf-8")
+        assert "eval(" not in source and "new Function" not in source and "innerHTML" not in source, name

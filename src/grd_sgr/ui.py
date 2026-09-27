@@ -150,13 +150,16 @@ class Job:
     reports: dict[str, bytes] = field(default_factory=dict)
     error: str | None = None
     notice: str | None = None
+    notice_code: str | None = None
+    notice_params: dict[str, Any] = field(default_factory=dict)
     task: asyncio.Task | None = None
 
     def view(self, with_results: bool = True) -> dict[str, Any]:
         out: dict[str, Any] = {
             "id": self.id, "kind": self.kind, "status": self.status, "started_utc": self.started_utc,
             "finished_utc": self.finished_utc, "progress": self.progress, "error": self.error,
-            "notice": self.notice, "reports": sorted(self.reports),
+            "notice": self.notice, "notice_code": self.notice_code, "notice_params": self.notice_params,
+            "reports": sorted(self.reports),
         }
         if self.results:
             overall = overall_verdict(self.results)
@@ -195,12 +198,21 @@ STATE = web.AppKey("state", dict)
 
 
 class Refused(Exception):
-    """A request the UI declines, with the status and the reason to show."""
+    """A request the UI declines, with the status and the reason to show.
 
-    def __init__(self, status: int, message: str):
+    ``code`` is stable: the interface translates the message from it and from
+    ``params``. ``message`` is the English text, kept for API clients."""
+
+    def __init__(self, status: int, code: str, message: str, **params: Any):
         super().__init__(message)
         self.status = status
+        self.code = code
         self.message = message
+        self.params = {k: v if isinstance(v, (int, float)) else str(v) for k, v in params.items()}
+
+
+# Who a refusal is about: the code goes to the interface, the English name to the message.
+SUBJECTS = {"ems": "EMS", "meter": "reference meter"}
 
 
 # -- helpers ---------------------------------------------------------------------------------
@@ -226,8 +238,14 @@ def _secure_headers(resp: web.StreamResponse) -> web.StreamResponse:
     return resp
 
 
-def _json_error(status: int, message: str) -> web.Response:
-    return web.json_response({"error": message}, status=status)
+def _json_error(status: int, message: str, code: str | None = None,
+                params: dict[str, Any] | None = None) -> web.Response:
+    body: dict[str, Any] = {"error": message}
+    if code:
+        body["code"] = code
+    if params:
+        body["params"] = params
+    return web.json_response(body, status=status)
 
 
 def _safe_name(name: str | None, default: str) -> str:
@@ -249,25 +267,29 @@ def _host_allowed(url: str, allowed: tuple[str, ...], denied: tuple[str, ...] = 
     return any(host == a or host.endswith("." + a) for a in allowed)
 
 
-def _check_reach(cfg: UiConfig, raw_text: str, props: dict[str, str], what: str) -> None:
+def _check_reach(cfg: UiConfig, raw_text: str, props: dict[str, str], subject: str) -> None:
     """Public mode: an EID may only lead the UI to an allowed host. The address
     is checked after substitution, and every request path must start with '/',
     so that nothing appended to it can move the request to another host."""
     if cfg.allowed_targets is None:
         return
+    what = SUBJECTS[subject]
     text = instantiate_text(raw_text, resolve_properties(raw_text, props))
     eid = parse_eid(text)
     if eid.interface_type != "rest":
-        raise Refused(400, f"{what}: this hosted instance tests REST interfaces only")
+        raise Refused(400, "rest_only", f"{what}: this hosted instance tests REST interfaces only",
+                      subject=subject)
     desc = eid.rest_description()
     uri = (desc.findtext(f"{NS}restApiUri") or "").strip() if desc is not None else ""
     if not _host_allowed(uri, cfg.allowed_targets, cfg.denied_targets):
-        raise Refused(400, f"{what}: the address {uri or '(none)'} is not one this instance may reach "
-                           f"({', '.join(cfg.allowed_targets)})")
+        allowed = ", ".join(cfg.allowed_targets)
+        raise Refused(400, "target_not_allowed", f"{what}: the address {uri or '(none)'} is not one this "
+                      f"instance may reach ({allowed})", subject=subject, address=uri or "—", allowed=allowed)
     for el in ET.fromstring(text).iter(f"{NS}requestPath"):
         path = (el.text or "").strip()
         if path and not path.startswith("/"):
-            raise Refused(400, f"{what}: every requestPath must start with '/' ({path[:40]!r})")
+            raise Refused(400, "request_path", f"{what}: every requestPath must start with '/' ({path[:40]!r})",
+                          subject=subject, path=repr(path[:40]))
 
 
 def _read_json_text(value: Any) -> Any:
@@ -346,11 +368,11 @@ def _session(request: web.Request, create: bool = True) -> Session | None:
         now = time.monotonic()
         recent = [t for t in state.get("created", []) if now - t < 60]
         if len(recent) >= SESSIONS_PER_MINUTE:
-            raise Refused(503, "too many new sessions right now; try again in a minute")
+            raise Refused(503, "too_many_sessions", "too many new sessions right now; try again in a minute")
         if len(sessions) >= cfg.max_sessions:
             _evict(request.app, idle_s=1800)
         if len(sessions) >= cfg.max_sessions:
-            raise Refused(503, "this instance is full; try again later")
+            raise Refused(503, "instance_full", "this instance is full; try again later")
         state["created"] = recent + [now]
         sid = secrets.token_urlsafe(24)
         s = Session(sid, cfg.workdir / secrets.token_hex(8))
@@ -364,7 +386,7 @@ def _session(request: web.Request, create: bool = True) -> Session | None:
 def _require_session(request: web.Request) -> Session:
     s = _session(request, create=False)
     if s is None:
-        raise Refused(409, "describe the EMS first")
+        raise Refused(409, "no_target", "describe the EMS first")
     return s
 
 
@@ -390,7 +412,8 @@ async def guard(request: web.Request, handler):
         return _secure_headers(web.Response(status=421, text="Misdirected request: this host name is not served here."))
     if request.path.startswith("/api/") and request.method not in ("GET", "HEAD") \
             and request.headers.get(CSRF_HEADER) != CSRF_VALUE:
-        return _secure_headers(_json_error(403, f"missing {CSRF_HEADER} header"))
+        return _secure_headers(_json_error(403, f"missing {CSRF_HEADER} header", "csrf_header",
+                                           {"header": CSRF_HEADER}))
     if cfg.token is not None:
         given = request.query.get("token") if request.path == "/" else None
         if given is not None:
@@ -406,7 +429,7 @@ async def guard(request: web.Request, handler):
     try:
         resp = await handler(request)
     except Refused as exc:
-        resp = _json_error(exc.status, exc.message)
+        resp = _json_error(exc.status, exc.message, exc.code, exc.params)
     if request.get("new_session"):
         resp.set_cookie(SESSION_COOKIE, request["new_session"], httponly=True, samesite="Strict",
                         secure=cfg.secure_cookies, path="/")
@@ -415,13 +438,13 @@ async def guard(request: web.Request, handler):
 
 async def _body(request: web.Request) -> dict[str, Any]:
     if request.content_length is not None and request.content_length > MAX_BODY_BYTES:
-        raise Refused(413, "request too large")
+        raise Refused(413, "request_too_large", "request too large")
     try:
         data = await request.json()
     except ValueError:
-        raise Refused(400, "the request body is not JSON") from None
+        raise Refused(400, "body_not_json", "the request body is not JSON") from None
     if not isinstance(data, dict):
-        raise Refused(400, "the request body must be a JSON object")
+        raise Refused(400, "body_not_object", "the request body must be a JSON object")
     return data
 
 
@@ -438,6 +461,10 @@ async def page_index(request: web.Request) -> web.Response:
 
 async def page_js(request: web.Request) -> web.Response:
     return web.Response(body=_static("app.js"), content_type="text/javascript", charset="utf-8")
+
+
+async def page_i18n(request: web.Request) -> web.Response:
+    return web.Response(body=_static("i18n.js"), content_type="text/javascript", charset="utf-8")
 
 
 async def page_css(request: web.Request) -> web.Response:
@@ -469,11 +496,13 @@ def _store_eid(s: Session, part: Any, folder: str, previous: Path | None) -> Pat
         return previous
     xml = str(part["xml"])
     if len(xml.encode("utf-8")) > MAX_EID_BYTES:
-        raise Refused(413, f"{folder}: the EID is larger than {MAX_EID_BYTES // 1000} kB")
+        raise Refused(413, "eid_too_large", f"{folder}: the EID is larger than {MAX_EID_BYTES // 1000} kB",
+                      subject=folder, kb=MAX_EID_BYTES // 1000)
     try:
         parse_eid(xml)
     except Exception as exc:
-        raise Refused(400, f"{folder}: not a readable EID ({type(exc).__name__})") from None
+        raise Refused(400, "eid_unreadable", f"{folder}: not a readable EID ({type(exc).__name__})",
+                      subject=folder, detail=type(exc).__name__) from None
     # A fresh folder per upload: the target in force keeps its file until the
     # new one is accepted (`_prune` then removes what nothing refers to).
     path = s.dir / folder / secrets.token_hex(4) / _safe_name(part.get("name"), "eid.xml")
@@ -494,12 +523,12 @@ def _prune(s: Session) -> None:
 async def api_target_post(request: web.Request) -> web.Response:
     cfg, s = request.app[CFG], _session(request)
     if s.running():
-        raise Refused(409, "a run is in progress; wait for it or cancel it first")
+        raise Refused(409, "run_in_progress", "a run is in progress; wait for it or cancel it first")
     body = await _body(request)
     prev = s.target
     eid_path = _store_eid(s, body.get("eid"), "ems", prev.eid_path if prev else None)
     if eid_path is None:
-        raise Refused(400, "give the EMS's EID first")
+        raise Refused(400, "eid_required", "give the EMS's EID first")
     props = _merge_props(body.get("props"), prev.props if prev else {})
     target = Target(eid_path=eid_path, props=props)
 
@@ -514,7 +543,8 @@ async def api_target_post(request: web.Request) -> web.Response:
             target.evidence_headers = {name: value}
         if cfg.allowed_targets is not None and not _host_allowed(target.evidence_url, cfg.allowed_targets,
                                                                  cfg.denied_targets):
-            raise Refused(400, "evidence API: this address is not one this instance may reach")
+            raise Refused(400, "evidence_not_allowed",
+                          "evidence API: this address is not one this instance may reach")
 
     meter = body.get("meter")
     if isinstance(meter, dict):
@@ -531,9 +561,9 @@ async def api_target_post(request: web.Request) -> web.Response:
         if target.meter_eid_path is not None:
             target.meter_point = tuple(point.split(".", 1)) if "." in point else None
 
-    _check_reach(cfg, eid_path.read_text(encoding="utf-8"), target.props, "EMS")
+    _check_reach(cfg, eid_path.read_text(encoding="utf-8"), target.props, "ems")
     if target.meter_eid_path is not None:
-        _check_reach(cfg, target.meter_eid_path.read_text(encoding="utf-8"), target.meter_props, "reference meter")
+        _check_reach(cfg, target.meter_eid_path.read_text(encoding="utf-8"), target.meter_props, "meter")
     if s.console is not None:
         await _console_close(s)
     s.target = target
@@ -547,10 +577,10 @@ async def api_target_post(request: web.Request) -> web.Response:
 def _new_job(request: web.Request, s: Session, kind: str) -> Job:
     cfg = request.app[CFG]
     if s.running():
-        raise Refused(409, "a run is already in progress in this session")
+        raise Refused(409, "run_already", "a run is already in progress in this session")
     running = sum(1 for x in request.app[SESSIONS].values() for j in x.jobs.values() if j.status == "running")
     if running >= cfg.max_running:
-        raise Refused(503, "this instance is busy; try again in a few minutes")
+        raise Refused(503, "instance_busy", "this instance is busy; try again in a few minutes")
     job = Job(id=secrets.token_hex(6), kind=kind, started_utc=utc_now_iso())
     s.jobs[job.id] = job
     finished = sorted((j for j in s.jobs.values() if j.status != "running"), key=lambda j: j.started_utc)
@@ -579,24 +609,25 @@ def _selection(body: dict[str, Any]) -> set[str]:
     wanted = body.get("tests")
     allowed = set(STATIC_ORDER) | set(DYNAMIC_ORDER)
     if not isinstance(wanted, list) or not wanted:
-        raise Refused(400, "choose at least one test")
+        raise Refused(400, "choose_test", "choose at least one test")
     chosen = {str(t) for t in wanted}
     unknown = chosen - allowed
     if unknown:
-        raise Refused(400, f"not a compliance test here: {', '.join(sorted(unknown))}")
+        names = ", ".join(sorted(unknown))
+        raise Refused(400, "unknown_test", f"not a compliance test here: {names}", tests=names)
     return chosen
 
 
 def _settings(cfg: UiConfig, body: dict[str, Any]) -> RunSettings:
     allow_write = bool(body.get("allow_write"))
     if allow_write and body.get("confirm_writes") is not True:
-        raise Refused(400, "writes command the real installation: confirm them first")
+        raise Refused(400, "confirm_writes", "writes command the real installation: confirm them first")
 
     def number(key: str, default: float, low: float, high: float) -> float:
         try:
             value = float(body.get(key, default))
         except (TypeError, ValueError):
-            raise Refused(400, f"{key} must be a number") from None
+            raise Refused(400, "not_a_number", f"{key} must be a number", field=key) from None
         return min(max(value, low), high)
 
     reaction = body.get("reaction_time_s")
@@ -646,10 +677,11 @@ async def api_jobs_post(request: web.Request) -> web.Response:
     kind = body.get("kind", "compliance")
     if kind == "compliance":
         if s.target is None:
-            raise Refused(400, "describe the EMS first")
+            raise Refused(400, "no_target", "describe the EMS first")
         view = _target_view(s.target)
         if not view["ready"]:
-            raise Refused(400, "some configuration values are missing: " + ", ".join(view["ems"]["missing"]))
+            names = ", ".join(view["ems"]["missing"])
+            raise Refused(400, "config_missing", "some configuration values are missing: " + names, names=names)
         selection, settings = _selection(body), _settings(cfg, body)
         job = _new_job(request, s, kind)
         job.task = asyncio.ensure_future(
@@ -657,28 +689,31 @@ async def api_jobs_post(request: web.Request) -> web.Response:
     elif kind == "tariffs":
         job = await _start_tariffs(request, s, body)
     else:
-        raise Refused(400, f"unknown kind of run: {kind!r}")
+        raise Refused(400, "unknown_kind", f"unknown kind of run: {kind!r}", kind=repr(kind))
     return web.json_response({"job": job.view(with_results=False)})
 
 
 async def _start_tariffs(request: web.Request, s: Session, body: dict[str, Any]) -> Job:
     cfg, state = request.app[CFG], request.app[STATE]
     if cfg.public:
-        raise Refused(403, "tariff runs need the EMS to reach this machine: run grd-sgr ui locally for them")
+        raise Refused(403, "tariffs_hosted",
+                      "tariff runs need the EMS to reach this machine: run grd-sgr ui locally for them")
     if state.get("tariff_busy"):
-        raise Refused(409, "a tariff run is already serving on this machine")
+        raise Refused(409, "tariff_busy", "a tariff run is already serving on this machine")
     scenarios = [str(x) for x in body.get("scenarios") or [] if str(x) in SCENARIOS]
     if not scenarios:
-        raise Refused(400, "choose at least one scenario")
+        raise Refused(400, "choose_scenario", "choose at least one scenario")
     try:
         dwell = min(max(float(body.get("dwell_s", 600)), cfg.min_dwell_s), cfg.max_dwell_s)
     except (TypeError, ValueError):
-        raise Refused(400, "dwell_s must be a number") from None
+        raise Refused(400, "not_a_number", "dwell_s must be a number", field="dwell_s") from None
     job = _new_job(request, s, "tariffs")
     host = _hostname(request) or "127.0.0.1"
     display = f"[{host}]" if ":" in host else host
-    job.notice = (f"Point the EMS's dynamic-tariff source at http://{display}:{cfg.tariff_port}/v1/tariffs "
-                  f"(API v2: http://{display}:{cfg.tariff_port}/v2/tariffs). Each scenario is served {dwell:.0f} s.")
+    v1, v2 = f"http://{display}:{cfg.tariff_port}/v1/tariffs", f"http://{display}:{cfg.tariff_port}/v2/tariffs"
+    job.notice = (f"Point the EMS's dynamic-tariff source at {v1} (API v2: {v2}). "
+                  f"Each scenario is served {dwell:.0f} s.")
+    job.notice_code, job.notice_params = "tariff_notice", {"v1": v1, "v2": v2, "dwell": f"{dwell:.0f}"}
     target = s.target
     redactor = target.redactor() if target is not None else Redactor()
     state["tariff_busy"] = True
@@ -709,7 +744,7 @@ def _job(request: web.Request) -> Job:
     s = _session(request, create=False)
     job = s.jobs.get(request.match_info["job"]) if s is not None else None
     if job is None:
-        raise Refused(404, "no such run in this session")
+        raise Refused(404, "no_such_run", "no such run in this session")
     return job
 
 
@@ -734,7 +769,7 @@ async def api_job_report(request: web.Request) -> web.Response:
     job = _job(request)
     name = request.match_info["name"]
     if name not in REPORTS or name not in job.reports:
-        raise Refused(404, "no such report for this run")
+        raise Refused(404, "no_such_report", "no such report for this run")
     resp = web.Response(body=job.reports[name], headers={"Content-Type": REPORTS[name]})
     download = request.query.get("download") == "1" or name != "report.html"
     stem = re.sub(r"[^A-Za-z0-9_-]", "_", f"sgr-{job.kind}-{job.started_utc[:19]}")
@@ -757,7 +792,7 @@ async def _console_close(s: Session) -> None:
 
 def _console(s: Session) -> Console:
     if s.console is None:
-        raise Refused(409, "connect the console first")
+        raise Refused(409, "console_not_connected", "connect the console first")
     return s.console
 
 
@@ -782,9 +817,9 @@ async def _read_points(s: Session) -> list[dict[str, Any]]:
 async def api_console_connect(request: web.Request) -> web.Response:
     s = _require_session(request)
     if s.target is None:
-        raise Refused(400, "describe the EMS first")
+        raise Refused(400, "no_target", "describe the EMS first")
     if s.running():
-        raise Refused(409, "a run is in progress; the console waits for it")
+        raise Refused(409, "console_waits", "a run is in progress; the console waits for it")
     await _console_close(s)
     redactor = s.target.redactor()
     device = SgrDevice(s.target.eid_path, s.target.props)
@@ -793,13 +828,14 @@ async def api_console_connect(request: web.Request) -> web.Response:
     except Exception as exc:
         with contextlib.suppress(Exception):
             await device.close()
-        raise Refused(502, "cannot connect: " + redactor.text(describe_error(exc))) from None
+        detail = redactor.text(describe_error(exc))
+        raise Refused(502, "cannot_connect", "cannot connect: " + detail, detail=detail) from None
     s.console = Console(device=device, redactor=redactor, connected_utc=utc_now_iso())
     points = await _read_points(s)
     if points and all("error" in p for p in points):
         await _console_close(s)
-        raise Refused(502, "connected, but no data point can be read (authentication fails silently in the "
-                           "CommHandler): " + points[0]["error"])
+        raise Refused(502, "no_readable_point", "connected, but no data point can be read (authentication fails "
+                      "silently in the CommHandler): " + points[0]["error"], detail=points[0]["error"])
     return web.json_response({"connected": True, "points": points, "warnings": [
         redactor.text(w) for w in device.connect_warnings]})
 
@@ -813,19 +849,22 @@ async def api_console_write(request: web.Request) -> web.Response:
     s = _require_session(request)
     console = _console(s)
     if s.running():
-        raise Refused(409, "a run is in progress; the console waits for it")
+        raise Refused(409, "console_waits", "a run is in progress; the console waits for it")
     body = await _body(request)
     if body.get("confirm") is not True:
-        raise Refused(400, "a write commands the real installation: confirm it first")
+        raise Refused(400, "confirm_write", "a write commands the real installation: confirm it first")
     fp_name, dp_name = str(body.get("fp") or ""), str(body.get("dp") or "")
     eid = parse_eid(s.target.eid_path)
     fp = eid.profile(fp_name)
     dp = fp.data_point(dp_name) if fp is not None else None
     if dp is None or not dp.writable:
-        raise Refused(400, f"{fp_name}.{dp_name} is not a writable data point of this EID")
+        raise Refused(400, "not_writable", f"{fp_name}.{dp_name} is not a writable data point of this EID",
+                      point=f"{fp_name}.{dp_name}")
     value = body.get("value")
     if dp.enum_literals and value not in dp.enum_literals:
-        raise Refused(400, f"{value!r} is not one of {', '.join(dp.enum_literals)}")
+        literals = ", ".join(dp.enum_literals)
+        raise Refused(400, "not_a_literal", f"{value!r} is not one of {literals}", value=repr(value),
+                      literals=literals)
     entry: dict[str, Any] = {"ts": utc_now_iso(), "fp": fp_name, "dp": dp_name,
                              "value": console.redactor.value(value)}
     try:
@@ -851,7 +890,8 @@ async def api_console_evidence(request: web.Request) -> web.Response:
             after = max(0, await evidence.last_seq() - 30)
         events = await evidence.events(after_seq=after, limit=200)
     except Exception as exc:
-        raise Refused(502, "evidence API: " + s.console.redactor.text(describe_error(exc))) from None
+        detail = s.console.redactor.text(describe_error(exc))
+        raise Refused(502, "evidence_api_error", "evidence API: " + detail, detail=detail) from None
     redactor = s.console.redactor
     return web.json_response({"available": True, "events": [redactor.value(e.__dict__) for e in events]})
 
@@ -895,6 +935,7 @@ def create_app(cfg: UiConfig) -> web.Application:
     app[STATE] = {}
     app.router.add_get("/", page_index)
     app.router.add_get("/app.js", page_js)
+    app.router.add_get("/i18n.js", page_i18n)
     app.router.add_get("/app.css", page_css)
     app.router.add_get("/api/info", api_info)
     app.router.add_get("/api/target", api_target_get)

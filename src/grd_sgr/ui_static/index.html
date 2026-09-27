@@ -3,22 +3,31 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>grd-sgr · SmartGridready test bench</title>
+<title data-i18n="page.title">grd-sgr · SmartGridready test bench</title>
 <link rel="stylesheet" href="/app.css">
+<script src="/i18n.js" defer></script>
 <script src="/app.js" defer></script>
 </head>
 <body>
 <header class="top">
   <div class="wrap">
-    <p class="brand"><strong>grd-smartgridready</strong> <span id="version" class="muted"></span></p>
-    <p class="tagline">Test an energy management system the way SmartGridready defines it: through the EID it
-      declares, with the official CommHandler. The result is evidence, not a certification: only the
+    <div class="topline">
+      <p class="brand"><strong>grd-smartgridready</strong> <span id="version" class="muted"></span></p>
+      <nav class="langs" id="langs" data-i18n-attr="aria-label:lang.label" aria-label="Language">
+        <button type="button" data-lang="en" lang="en" title="English">EN</button>
+        <button type="button" data-lang="fr" lang="fr" title="Français">FR</button>
+        <button type="button" data-lang="de" lang="de" title="Deutsch">DE</button>
+        <button type="button" data-lang="it" lang="it" title="Italiano">IT</button>
+      </nav>
+    </div>
+    <p class="tagline" data-i18n="tagline">Test an energy management system the way SmartGridready defines it: through
+      the EID it declares, with the official CommHandler. The result is evidence, not a certification: only the
       SmartGridready association declares products.</p>
     <nav class="tabs" role="tablist">
-      <button type="button" role="tab" data-tab="ems" aria-selected="true">1 · EMS</button>
-      <button type="button" role="tab" data-tab="compliance" aria-selected="false">2 · Compliance</button>
-      <button type="button" role="tab" data-tab="tariffs" aria-selected="false">3 · Tariffs</button>
-      <button type="button" role="tab" data-tab="console" aria-selected="false">4 · Console</button>
+      <button type="button" role="tab" data-tab="ems" aria-selected="true">1 · <span data-i18n="tab.ems">EMS</span></button>
+      <button type="button" role="tab" data-tab="compliance" aria-selected="false">2 · <span data-i18n="tab.compliance">Compliance</span></button>
+      <button type="button" role="tab" data-tab="tariffs" aria-selected="false">3 · <span data-i18n="tab.tariffs">Tariffs</span></button>
+      <button type="button" role="tab" data-tab="console" aria-selected="false">4 · <span data-i18n="tab.console">Console</span></button>
     </nav>
   </div>
 </header>
@@ -27,91 +36,92 @@
   <p id="flash" class="flash" hidden></p>
 
   <section id="tab-ems" class="tab" role="tabpanel">
-    <h2>The EMS under test</h2>
-    <p class="hint">Load the EMS's EID, its SmartGridready product description. Its configuration values
-      become the form below. Credentials stay with this tool and never come back to the browser: a secret
+    <h2 data-i18n="ems.h">The EMS under test</h2>
+    <p class="hint" data-i18n="ems.hint">Load the EMS's EID, its SmartGridready product description. Its configuration
+      values become the form below. Credentials stay with this tool and never come back to the browser: a secret
       field left blank keeps the value given before.</p>
     <div class="card">
-      <label class="file">EID of the EMS <input type="file" id="eid-file" accept=".xml,application/xml,text/xml"></label>
+      <label class="file"><span data-i18n="ems.eid_file">EID of the EMS</span> <input type="file" id="eid-file" accept=".xml,application/xml,text/xml"></label>
       <div id="eid-summary" class="summary"></div>
       <div id="config-form" class="grid"></div>
     </div>
     <details class="card" id="evidence-card">
-      <summary>Evidence API <span class="muted">— optional; needed for E4 and the console's journal</span></summary>
+      <summary><span data-i18n="ev.summary">Evidence API</span> <span class="muted" data-i18n="ev.optional">— optional; needed for E4 and the console's journal</span></summary>
       <div class="grid">
-        <label>Base URL <input id="ev-url" autocomplete="off" placeholder="http://ems.local:8080/api/sgr/evidence"></label>
-        <label>Header name <input id="ev-hname" autocomplete="off" placeholder="Authorization"></label>
-        <label>Header value <input id="ev-hvalue" type="password" autocomplete="off" placeholder="Bearer …"></label>
+        <label><span data-i18n="ev.url">Base URL</span> <input id="ev-url" autocomplete="off" placeholder="http://ems.local:8080/api/sgr/evidence"></label>
+        <label><span data-i18n="ev.hname">Header name</span> <input id="ev-hname" autocomplete="off" placeholder="Authorization"></label>
+        <label><span data-i18n="ev.hvalue">Header value</span> <input id="ev-hvalue" type="password" autocomplete="off" placeholder="Bearer …"></label>
       </div>
     </details>
     <details class="card" id="meter-card">
-      <summary>Reference meter <span class="muted">— optional; F1 and F4 judge the effect against it</span></summary>
-      <label class="check"><input type="checkbox" id="meter-same"> No independent meter: use the EMS's own
-        Metering point (the report will say the reference is not independent)</label>
-      <label class="file" id="meter-file-label">EID of the meter <input type="file" id="meter-file" accept=".xml,application/xml,text/xml"></label>
+      <summary><span data-i18n="meter.summary">Reference meter</span> <span class="muted" data-i18n="meter.optional">— optional; F1 and F4 judge the effect against it</span></summary>
+      <label class="check"><input type="checkbox" id="meter-same"> <span data-i18n="meter.same">No independent meter:
+        use the EMS's own Metering point (the report will say the reference is not independent)</span></label>
+      <label class="file" id="meter-file-label"><span data-i18n="meter.file">EID of the meter</span> <input type="file" id="meter-file" accept=".xml,application/xml,text/xml"></label>
       <div id="meter-summary" class="summary"></div>
       <div id="meter-form" class="grid"></div>
-      <label>Point giving the grid power in kW, positive for import <select id="meter-point"></select></label>
+      <label><span data-i18n="meter.point">Point giving the grid power in kW, positive for import</span> <select id="meter-point"></select></label>
     </details>
     <div class="actions">
-      <button type="button" id="save-target" class="primary">Save</button>
+      <button type="button" id="save-target" class="primary" data-i18n="save">Save</button>
       <span id="target-status" class="status"></span>
     </div>
   </section>
 
   <section id="tab-compliance" class="tab" role="tabpanel" hidden>
-    <h2>Compliance tests</h2>
-    <p class="hint">The tool acts as the grid operator's flexibility manager and drives the EMS through its
-      own EID. Each run produces an audit report: scope, method, every verdict with its clause and evidence,
-      and what the run cannot prove.</p>
+    <h2 data-i18n="c.h">Compliance tests</h2>
+    <p class="hint" data-i18n="c.hint">The tool acts as the grid operator's flexibility manager and drives the EMS
+      through its own EID. Each run produces an audit report: scope, method, every verdict with its clause and
+      evidence, and what the run cannot prove.</p>
     <div class="card">
       <fieldset>
-        <legend>What to run</legend>
-        <label class="check"><input type="checkbox" class="family" value="S" checked> <b>S — Declarations.</b>
-          The EID against the SmartGridready schema and profile library.</label>
-        <label class="check"><input type="checkbox" class="family" value="P" checked> <b>P — Protocol, read-only.</b>
-          Connection, typed reads, FlexMgmt schemas.</label>
-        <label class="check"><input type="checkbox" class="family" value="E"> <b>E — Traceability.</b>
-          Every command found in the EMS's evidence journal (needs the evidence API and writes).</label>
+        <legend data-i18n="c.what">What to run</legend>
+        <label class="check"><input type="checkbox" class="family" value="S" checked> <span><b data-i18n="c.S.title">S — Declarations.</b>
+          <span data-i18n="c.S.text">The EID against the SmartGridready schema and profile library.</span></span></label>
+        <label class="check"><input type="checkbox" class="family" value="P" checked> <span><b data-i18n="c.P.title">P — Protocol, read-only.</b>
+          <span data-i18n="c.P.text">Connection, typed reads, FlexMgmt schemas.</span></span></label>
+        <label class="check"><input type="checkbox" class="family" value="E"> <span><b data-i18n="c.E.title">E — Traceability.</b>
+          <span data-i18n="c.E.text">Every command found in the EMS's evidence journal (needs the evidence API and writes).</span></span></label>
       </fieldset>
       <fieldset class="danger">
-        <legend>Writes to the installation</legend>
-        <label class="check"><input type="checkbox" id="allow-write"> <b>Protocol writes (P3, P4, P6, P7).</b>
-          Valid, invalid and unauthenticated commands, then the state found is restored.</label>
-        <label class="check"><input type="checkbox" id="functional"> <b>Functional tests (F1, F4).</b>
-          Each mode is held and its effect judged against the reference meter.</label>
+        <legend data-i18n="c.writes">Writes to the installation</legend>
+        <label class="check"><input type="checkbox" id="allow-write"> <span><b data-i18n="c.pw.title">Protocol writes (P3, P4, P6, P7).</b>
+          <span data-i18n="c.pw.text">Valid, invalid and unauthenticated commands, then the state found is restored.</span></span></label>
+        <label class="check"><input type="checkbox" id="functional"> <span><b data-i18n="c.fn.title">Functional tests (F1, F4).</b>
+          <span data-i18n="c.fn.text">Each mode is held and its effect judged against the reference meter.</span></span></label>
         <div class="grid">
-          <label>Hold per mode, seconds <input type="number" id="hold" value="60" min="5" step="5"></label>
-          <label>Declared reaction time, seconds <input type="number" id="reaction" min="1" placeholder="from the evidence API"></label>
+          <label><span data-i18n="c.hold">Hold per mode, seconds</span> <input type="number" id="hold" value="60" min="5" step="5"></label>
+          <label><span data-i18n="c.reaction">Declared reaction time, seconds</span> <input type="number" id="reaction" min="1"
+            placeholder="from the evidence API" data-i18n-attr="placeholder:c.reaction_ph"></label>
         </div>
-        <label class="check confirm"><input type="checkbox" id="confirm-writes"> I understand: these tests command
-          the real installation, and each ends by writing the released state.</label>
+        <label class="check confirm"><input type="checkbox" id="confirm-writes"> <span data-i18n="c.confirm">I understand:
+          these tests command the real installation, and each ends by writing the released state.</span></label>
       </fieldset>
       <div class="actions">
-        <button type="button" id="run" class="primary">Run the tests</button>
-        <button type="button" id="cancel" hidden>Cancel</button>
+        <button type="button" id="run" class="primary" data-i18n="c.run">Run the tests</button>
+        <button type="button" id="cancel" data-i18n="cancel" hidden>Cancel</button>
         <span id="run-status" class="status"></span>
       </div>
     </div>
     <div id="compliance-result"></div>
-    <h3>Runs of this session</h3>
+    <h3 data-i18n="c.history">Runs of this session</h3>
     <ul id="history" class="history"></ul>
   </section>
 
   <section id="tab-tariffs" class="tab" role="tabpanel" hidden>
-    <h2>Dynamic tariffs (T1–T6)</h2>
-    <p class="hint">The tool serves the VSE dynamic-tariff API, v1 and v2, scenario after scenario, while the
-      EMS polls it; then it judges what the EMS asked and what it journalled. The EMS must reach this machine:
-      start <code>grd-sgr ui --expose</code> if it runs elsewhere.</p>
+    <h2 data-i18n="t.h">Dynamic tariffs (T1–T6)</h2>
+    <p class="hint" data-i18n="t.hint">The tool serves the VSE dynamic-tariff API, v1 and v2, scenario after scenario,
+      while the EMS polls it; then it judges what the EMS asked and what it journalled. The EMS must reach this
+      machine: start <code>grd-sgr ui --expose</code> if it runs elsewhere.</p>
     <div class="card">
       <fieldset>
-        <legend>Scenarios</legend>
+        <legend data-i18n="t.scenarios">Scenarios</legend>
         <div id="scenarios" class="chips"></div>
       </fieldset>
-      <label>Seconds per scenario <input type="number" id="dwell" value="600" min="10" step="10"></label>
+      <label><span data-i18n="t.dwell">Seconds per scenario</span> <input type="number" id="dwell" value="600" min="10" step="10"></label>
       <div class="actions">
-        <button type="button" id="run-tariffs" class="primary">Serve and judge</button>
-        <button type="button" id="cancel-tariffs" hidden>Cancel</button>
+        <button type="button" id="run-tariffs" class="primary" data-i18n="t.run">Serve and judge</button>
+        <button type="button" id="cancel-tariffs" data-i18n="cancel" hidden>Cancel</button>
         <span id="tariff-status" class="status"></span>
       </div>
       <p id="tariff-notice" class="notice" hidden></p>
@@ -120,32 +130,34 @@
   </section>
 
   <section id="tab-console" class="tab" role="tabpanel" hidden>
-    <h2>Grid operator console</h2>
-    <p class="hint">Talk to the EMS as a grid operator would: through its EID, with the official CommHandler.
-      Read its data points, send a mode or a restriction, and watch the EMS journal what it did.</p>
+    <h2 data-i18n="k.h">Grid operator console</h2>
+    <p class="hint" data-i18n="k.hint">Talk to the EMS as a grid operator would: through its EID, with the official
+      CommHandler. Read its data points, send a mode or a restriction, and watch the EMS journal what it did.</p>
     <div class="actions">
-      <button type="button" id="connect" class="primary">Connect</button>
-      <button type="button" id="refresh">Read again</button>
-      <label class="check"><input type="checkbox" id="auto"> every 5 s</label>
-      <button type="button" id="disconnect">Disconnect</button>
+      <button type="button" id="connect" class="primary" data-i18n="k.connect">Connect</button>
+      <button type="button" id="refresh" data-i18n="k.refresh">Read again</button>
+      <label class="check"><input type="checkbox" id="auto"> <span data-i18n="k.auto">every 5 s</span></label>
+      <button type="button" id="disconnect" data-i18n="k.disconnect">Disconnect</button>
       <span id="console-status" class="status"></span>
     </div>
     <div class="card">
-      <h3>Data points</h3>
-      <table class="points"><thead><tr><th>Profile</th><th>Point</th><th>Value</th><th>Unit</th></tr></thead>
+      <h3 data-i18n="k.points">Data points</h3>
+      <table class="points"><thead><tr><th data-i18n="th.profile">Profile</th><th data-i18n="th.point">Point</th>
+        <th data-i18n="th.value">Value</th><th data-i18n="th.unit">Unit</th></tr></thead>
         <tbody id="points"></tbody></table>
     </div>
     <div class="card">
-      <h3>Send a command</h3>
-      <label class="check confirm"><input type="checkbox" id="confirm-console"> I understand: a write commands the
-        real installation.</label>
+      <h3 data-i18n="k.send_h">Send a command</h3>
+      <label class="check confirm"><input type="checkbox" id="confirm-console"> <span data-i18n="k.confirm">I understand:
+        a write commands the real installation.</span></label>
       <div id="writables" class="writables"></div>
-      <h3>Commands sent</h3>
+      <h3 data-i18n="k.log">Commands sent</h3>
       <ul id="console-log" class="log"></ul>
     </div>
     <div class="card">
-      <h3>Evidence journal</h3>
-      <table class="points"><thead><tr><th>#</th><th>Time (EMS)</th><th>Kind</th><th>Subject</th><th>Result</th></tr></thead>
+      <h3 data-i18n="k.journal">Evidence journal</h3>
+      <table class="points"><thead><tr><th>#</th><th data-i18n="th.time">Time (EMS)</th><th data-i18n="th.kind">Kind</th>
+        <th data-i18n="th.subject">Subject</th><th data-i18n="th.result">Result</th></tr></thead>
         <tbody id="journal"></tbody></table>
       <p id="journal-note" class="muted"></p>
     </div>
@@ -155,7 +167,7 @@
 <footer class="wrap foot">
   <span>MIT</span> ·
   <a href="https://github.com/chrohrbach/grd-smartgridready" target="_blank" rel="noopener noreferrer">github.com/chrohrbach/grd-smartgridready</a> ·
-  <span>Only the SmartGridready association declares products.</span>
+  <span data-i18n="foot.declares">Only the SmartGridready association declares products.</span>
 </footer>
 </body>
 </html>

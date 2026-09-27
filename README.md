@@ -105,6 +105,9 @@ Four tabs:
 - **Console**: talk to the EMS as a grid operator would. Read its data points,
   send a mode or a restriction, and watch its evidence journal.
 
+The interface speaks English, French, German and Italian: switch in the header,
+or open it with `?lang=fr` (or `de`, `it`); the audit report stays in English.
+
 Credentials stay with the tool and never reach the browser. Every write to the
 EMS needs an explicit confirmation.
 

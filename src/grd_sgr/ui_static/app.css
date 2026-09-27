@@ -20,6 +20,10 @@ body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.5 syste
 .wrap { max-width: 1040px; margin: 0 auto; padding: 0 16px; }
 .top { background: var(--surface); border-bottom: 1px solid var(--line); padding-top: 14px; }
 .brand { margin: 0; font-size: 16px; }
+.topline { display: flex; flex-wrap: wrap; gap: 6px 16px; align-items: center; justify-content: space-between; }
+.langs { display: flex; gap: 2px; }
+.langs button { padding: 3px 8px; font-size: 12px; font-weight: 600; color: var(--muted); background: none; }
+.langs button[aria-pressed="true"] { color: var(--accent-ink); background: var(--accent); border-color: var(--accent); }
 .tagline { margin: 4px 0 10px; color: var(--muted); max-width: 80ch; }
 .muted { color: var(--muted); }
 .tabs { display: flex; gap: 4px; flex-wrap: wrap; }
