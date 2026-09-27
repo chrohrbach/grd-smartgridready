@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
 <title data-i18n="page.title">grd-sgr · SmartGridready test bench</title>
 <link rel="stylesheet" href="/app.css">
 <script src="/i18n.js" defer></script>
@@ -10,32 +11,117 @@
 </head>
 <body>
 <header class="top">
-  <div class="wrap">
-    <div class="topline">
-      <p class="brand"><strong>grd-smartgridready</strong> <span id="version" class="muted"></span></p>
-      <nav class="langs" id="langs" data-i18n-attr="aria-label:lang.label" aria-label="Language">
-        <button type="button" data-lang="en" lang="en" title="English">EN</button>
-        <button type="button" data-lang="fr" lang="fr" title="Français">FR</button>
-        <button type="button" data-lang="de" lang="de" title="Deutsch">DE</button>
-        <button type="button" data-lang="it" lang="it" title="Italiano">IT</button>
-      </nav>
+  <div class="wrap bar">
+    <div class="logo">
+      <!-- A stylised badge, drawn for this tool: not the SmartGridready logo. -->
+      <svg width="38" height="38" viewBox="0 0 64 64" aria-hidden="true" focusable="false">
+        <rect x="2" y="2" width="60" height="60" rx="14" fill="#10260a" stroke="#8DC63F" stroke-width="2"/>
+        <g stroke="#8DC63F" stroke-width="2.4" fill="none" stroke-linecap="round">
+          <path d="M14 40 L24 28 L34 36 L50 18"/><path d="M50 18 L50 27"/><path d="M50 18 L41 18"/>
+        </g>
+        <g fill="#8DC63F"><circle cx="14" cy="40" r="3.2"/><circle cx="24" cy="28" r="3.2"/>
+          <circle cx="34" cy="36" r="3.2"/><circle cx="50" cy="18" r="3.2"/></g>
+        <path d="M30 46 l-5 10 h5 l-3 6" stroke="#8DC63F" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      <div>
+        <p class="name">Smart<b>GridReady</b> · <span data-i18n="sim.brand">GRD simulator</span></p>
+        <p class="sub" data-i18n="sim.sub">Drive an EMS as a grid operator would: SmartGridready SGCP, through the EID it declares</p>
+      </div>
     </div>
-    <p class="tagline" data-i18n="tagline">Test an energy management system the way SmartGridready defines it: through
-      the EID it declares, with the official CommHandler. The result is evidence, not a certification: only the
-      SmartGridready association declares products.</p>
-    <nav class="tabs" role="tablist">
-      <button type="button" role="tab" data-tab="ems" aria-selected="true">1 · <span data-i18n="tab.ems">EMS</span></button>
-      <button type="button" role="tab" data-tab="compliance" aria-selected="false">2 · <span data-i18n="tab.compliance">Compliance</span></button>
-      <button type="button" role="tab" data-tab="tariffs" aria-selected="false">3 · <span data-i18n="tab.tariffs">Tariffs</span></button>
-      <button type="button" role="tab" data-tab="console" aria-selected="false">4 · <span data-i18n="tab.console">Console</span></button>
+    <span class="spacer"></span>
+    <span id="conn" class="conn" data-i18n="sim.conn.off">not connected</span>
+    <span id="reaction" class="conn" hidden></span>
+    <nav class="langs" id="langs" data-i18n-attr="aria-label:lang.label" aria-label="Language">
+      <button type="button" data-lang="en" lang="en" title="English">EN</button>
+      <button type="button" data-lang="fr" lang="fr" title="Français">FR</button>
+      <button type="button" data-lang="de" lang="de" title="Deutsch">DE</button>
+      <button type="button" data-lang="it" lang="it" title="Italiano">IT</button>
     </nav>
   </div>
+  <nav class="wrap tabs" role="tablist">
+    <button type="button" role="tab" data-tab="sim" aria-selected="true"><span data-i18n="tab.sim">Simulator</span></button>
+    <button type="button" role="tab" data-tab="ems" aria-selected="false"><span data-i18n="tab.ems">EMS</span></button>
+    <button type="button" role="tab" data-tab="compliance" aria-selected="false"><span data-i18n="tab.compliance">Compliance</span></button>
+    <button type="button" role="tab" data-tab="tariffs" aria-selected="false"><span data-i18n="tab.tariffs">Tariffs</span></button>
+    <button type="button" role="tab" data-tab="console" aria-selected="false"><span data-i18n="tab.console">Console</span></button>
+  </nav>
 </header>
 
 <main class="wrap">
-  <p id="flash" class="flash" hidden></p>
+  <p id="flash" class="flash" role="alert" hidden></p>
 
-  <section id="tab-ems" class="tab" role="tabpanel">
+  <section id="tab-sim" class="tab sim" role="tabpanel">
+    <aside class="panel">
+      <h2 data-i18n="sim.h.target">EMS target</h2>
+      <div id="sim-target" class="target-box"></div>
+      <div class="row">
+        <button type="button" id="sim-connect" class="primary" data-i18n="k.connect">Connect</button>
+        <button type="button" id="sim-disconnect" data-i18n="k.disconnect">Disconnect</button>
+      </div>
+      <button type="button" id="sim-setup" class="link" data-i18n="sim.setup">Set up the EMS</button>
+      <label class="check confirm"><input type="checkbox" id="sim-confirm"> <span data-i18n="sim.confirm">I understand:
+        these commands drive the real installation.</span></label>
+
+      <h2 data-i18n="sim.h.auto">Automatic mode (GRD event generator)</h2>
+      <p class="hint" data-i18n="sim.hint.auto">The simulator sends a sequence of SGCP commands on its own.</p>
+      <label><span data-i18n="sim.scenario">Scenario</span> <select id="auto-scenario"></select></label>
+      <ul id="auto-why" class="why"></ul>
+      <div class="row">
+        <label><span data-i18n="sim.step_s">Step (s)</span> <input type="number" id="auto-interval" value="60" min="5" step="5"></label>
+        <label class="check"><input type="checkbox" id="auto-loop" checked> <span data-i18n="sim.loop_lbl">Loop</span></label>
+      </div>
+      <div class="row">
+        <button type="button" id="auto-start" class="primary" data-i18n="sim.start">Start</button>
+        <button type="button" id="auto-stop" class="danger" data-i18n="sim.stop">Stop</button>
+      </div>
+      <p id="auto-status" class="hint status-line"></p>
+
+      <h2 data-i18n="sim.h.presets">Quick GRD commands</h2>
+      <div id="presets" class="presets"></div>
+
+      <h2 data-i18n="sim.h.custom">Custom command</h2>
+      <label><span data-i18n="sim.c.type">Command</span>
+        <select id="c-type">
+          <option value="mode" data-i18n="sim.c.mode">Operating mode (SGCP)</option>
+          <option value="restrict" data-i18n="sim.c.restrict">Power restriction</option>
+          <option value="release" data-i18n="sim.c.release">Release the restriction</option>
+          <option value="tariff" data-i18n="sim.c.tariff">Dynamic tariff (not an SGCP command)</option>
+          <option value="frequency" data-i18n="sim.c.frequency">Grid frequency (not an SGCP command)</option>
+        </select></label>
+      <div id="c-mode">
+        <label><span data-i18n="sim.c.point">Data point</span> <select id="c-mode-point"></select></label>
+        <label><span data-i18n="sim.c.value">Mode</span> <select id="c-mode-value"></select></label>
+      </div>
+      <div id="c-restrict" hidden>
+        <label><span data-i18n="sim.c.point">Data point</span> <select id="c-restrict-point"></select></label>
+        <div id="c-restrict-values">
+          <div class="row">
+            <label><span data-i18n="sim.c.max_kw">Maximum power, kW</span> <input type="number" id="c-max" value="3" step="0.5"></label>
+            <label><span data-i18n="sim.c.minutes">Duration, minutes</span> <input type="number" id="c-minutes" value="30" min="1" max="1440"></label>
+          </div>
+          <label><span data-i18n="sim.c.min_kw">Minimum power, kW</span> <input type="number" id="c-min" value="-1000" step="0.5"></label>
+        </div>
+      </div>
+      <p id="c-why" class="notice small" hidden></p>
+      <button type="button" id="c-send" class="primary block" data-i18n="sim.send">Send the command</button>
+      <button type="button" id="release-all" class="danger block" data-i18n="sim.release_all">Back to normal</button>
+    </aside>
+
+    <div class="feed">
+      <div id="statusbar" class="statusbar"></div>
+      <div class="legend">
+        <span><i class="dot grd"></i><span data-i18n="sim.legend.grd">GRD action</span></span>
+        <span><i class="dot ems"></i><span data-i18n="sim.legend.ems">EMS reaction</span></span>
+        <span><i class="dot err"></i><span data-i18n="sim.legend.err">Error</span></span>
+        <span class="spacer"></span>
+        <button type="button" id="sim-refresh" class="small" data-i18n="sim.refresh">Refresh now</button>
+      </div>
+      <ol id="timeline" class="timeline" aria-live="polite"></ol>
+      <p id="timeline-empty" class="empty" data-i18n="sim.empty">No events yet.</p>
+    </div>
+  </section>
+
+  <section id="tab-ems" class="tab" role="tabpanel" hidden>
     <h2 data-i18n="ems.h">The EMS under test</h2>
     <p class="hint" data-i18n="ems.hint">Load the EMS's EID, its SmartGridready product description. Its configuration
       values become the form below. Credentials stay with this tool and never come back to the browser: a secret
@@ -91,7 +177,7 @@
           <span data-i18n="c.fn.text">Each mode is held and its effect judged against the reference meter.</span></span></label>
         <div class="grid">
           <label><span data-i18n="c.hold">Hold per mode, seconds</span> <input type="number" id="hold" value="60" min="5" step="5"></label>
-          <label><span data-i18n="c.reaction">Declared reaction time, seconds</span> <input type="number" id="reaction" min="1"
+          <label><span data-i18n="c.reaction">Declared reaction time, seconds</span> <input type="number" id="reaction-time" min="1"
             placeholder="from the evidence API" data-i18n-attr="placeholder:c.reaction_ph"></label>
         </div>
         <label class="check confirm"><input type="checkbox" id="confirm-writes"> <span data-i18n="c.confirm">I understand:
@@ -142,9 +228,9 @@
     </div>
     <div class="card">
       <h3 data-i18n="k.points">Data points</h3>
-      <table class="points"><thead><tr><th data-i18n="th.profile">Profile</th><th data-i18n="th.point">Point</th>
+      <div class="table-wrap"><table class="points"><thead><tr><th data-i18n="th.profile">Profile</th><th data-i18n="th.point">Point</th>
         <th data-i18n="th.value">Value</th><th data-i18n="th.unit">Unit</th></tr></thead>
-        <tbody id="points"></tbody></table>
+        <tbody id="points"></tbody></table></div>
     </div>
     <div class="card">
       <h3 data-i18n="k.send_h">Send a command</h3>
@@ -156,18 +242,21 @@
     </div>
     <div class="card">
       <h3 data-i18n="k.journal">Evidence journal</h3>
-      <table class="points"><thead><tr><th>#</th><th data-i18n="th.time">Time (EMS)</th><th data-i18n="th.kind">Kind</th>
+      <div class="table-wrap"><table class="points"><thead><tr><th>#</th><th data-i18n="th.time">Time (EMS)</th><th data-i18n="th.kind">Kind</th>
         <th data-i18n="th.subject">Subject</th><th data-i18n="th.result">Result</th></tr></thead>
-        <tbody id="journal"></tbody></table>
+        <tbody id="journal"></tbody></table></div>
       <p id="journal-note" class="muted"></p>
     </div>
   </section>
 </main>
 
 <footer class="wrap foot">
-  <span>MIT</span> ·
+  <p class="tagline" data-i18n="tagline">Test an energy management system the way SmartGridready defines it: through
+    the EID it declares, with the official CommHandler. The result is evidence, not a certification: only the
+    SmartGridready association declares products.</p>
+  <p><strong>grd-smartgridready</strong> <span id="version"></span> · <span>MIT</span> ·
   <a href="https://github.com/chrohrbach/grd-smartgridready" target="_blank" rel="noopener noreferrer">github.com/chrohrbach/grd-smartgridready</a> ·
-  <span data-i18n="foot.declares">Only the SmartGridready association declares products.</span>
+  <span data-i18n="foot.declares">Only the SmartGridready association declares products.</span></p>
 </footer>
 </body>
 </html>

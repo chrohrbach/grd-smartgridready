@@ -10,7 +10,17 @@ const VERDICT_CLASS = { PASS: "pass", FAIL: "fail", ERROR: "fail", INCONCLUSIVE:
   HARDWARE_REQUIRED: "warn", "N/A": "muted", SKIPPED: "muted" };
 const LANG_KEY = "grd-sgr.lang";
 
-const state = { info: null, target: null, jobs: {}, polls: {}, consoleTimer: null, lastSeq: 0, lang: "en" };
+const TABS = ["sim", "ems", "compliance", "tariffs", "console"];
+const LOCALES = { en: "en-GB", fr: "fr-CH", de: "de-CH", it: "it-CH" };
+const SIM_POLL_MS = 3000;
+const SIM_POLL_HIDDEN_MS = 15000;
+const SIM_EVENTS_SHOWN = 300;
+
+const state = {
+  info: null, target: null, jobs: {}, polls: {}, consoleTimer: null, lastSeq: 0, lang: "en",
+  // simulator: one poll loop at a time (simTimer), resumed on demand.
+  connected: false, simTimer: null, simBusy: false, simLastId: 0, simDelay: SIM_POLL_MS, simData: null,
+};
 
 // -- languages ---------------------------------------------------------------------------------
 
@@ -103,6 +113,7 @@ function setLanguage(lang, remember) {
     }
   }
   applyI18n(document);
+  reformatTimes();
 }
 
 // -- elements ------------------------------------------------------------------------------------
@@ -200,9 +211,16 @@ async function api(path, options = {}) {
 
 // -- tabs --------------------------------------------------------------------------------------
 
-function showTab(name) {
+function showTab(name, remember = true) {
+  if (!TABS.includes(name)) name = "sim";
   for (const button of $$(".tabs button")) button.setAttribute("aria-selected", String(button.dataset.tab === name));
   for (const panel of $$(".tab")) panel.hidden = panel.id !== `tab-${name}`;
+  if (remember) {
+    const url = new URL(window.location.href);
+    url.hash = name === "sim" ? "" : name;
+    window.history.replaceState(null, "", url);
+  }
+  if (name === "sim") simPoll();
 }
 
 // -- target (EMS, evidence, meter) ---------------------------------------------------------------
@@ -242,6 +260,7 @@ function summaryBlock(container, summary) {
 
 function renderTarget() {
   const target = state.target;
+  renderSim();
   if (!target) { msg($("#target-status"), "status.no_ems"); return; }
   summaryBlock($("#eid-summary"), target.ems);
   configForm($("#config-form"), target.ems);
@@ -296,7 +315,9 @@ async function saveTarget(extra = {}) {
     const data = await api("/api/target", { method: "POST", body });
     state.target = data.target;
     $("#ev-hvalue").value = "";
+    setConnected(false);  // a new target closes the connection (and releases what the player drove)
     renderTarget();
+    simPoll();
   } catch (error) { flash(error); }
 }
 
@@ -418,7 +439,7 @@ async function runCompliance() {
     kind: "compliance", tests, allow_write: writes, confirm_writes: $("#confirm-writes").checked,
     functional: $("#functional").checked, hold_s: Number($("#hold").value || 60),
   };
-  if ($("#reaction").value) body.reaction_time_s = Number($("#reaction").value);
+  if ($("#reaction-time").value) body.reaction_time_s = Number($("#reaction-time").value);
   try {
     const data = await api("/api/jobs", { method: "POST", body });
     watch(data.job, $("#compliance-result"), $("#run-status"), $("#cancel"), $("#run"));
@@ -520,6 +541,7 @@ async function writePoint(fpName, dp, input) {
   try {
     await api("/api/console/write", { method: "POST", body: { fp: fpName, dp: dp.name, value, confirm: $("#confirm-console").checked } });
     await refreshConsole();
+    simPoll();
   } catch (error) { flash(error); }
 }
 
@@ -558,8 +580,311 @@ async function connectConsole() {
     $("#journal").replaceChildren();
     if (data.warnings.length) msg($("#console-status"), "k.connected_warn", { warnings: data.warnings.join(" · ") });
     else msg($("#console-status"), "k.connected");
+    setConnected(true);
+    simPoll();
     await refreshJournal();
-  } catch (error) { plain($("#console-status"), ""); flash(error); }
+  } catch (error) { plain($("#console-status"), ""); setConnected(false); flash(error); }
+}
+
+async function disconnectConsole() {
+  flash(null);
+  try {
+    await api("/api/console/disconnect", { method: "POST", body: {} });
+    msg($("#console-status"), "k.disconnected");
+    $("#auto").checked = false;  // the 5 s read-back stops with the connection
+    clearInterval(state.consoleTimer);
+    setConnected(false);
+    simPoll();
+  } catch (error) { flash(error); }
+}
+
+// -- simulator -----------------------------------------------------------------------------------
+// What the simulator offers comes from the server (state.target.sim), which
+// derives it from the EID. The scenario player runs on the server; this page
+// only arms it, stops it, and polls the timeline (which keeps its lease).
+
+function setConnected(on, failed) {
+  state.connected = on;
+  const pill = $("#conn");
+  pill.className = failed ? "conn bad" : on ? "conn ok" : "conn";
+  msg(pill, failed ? "sim.conn.error" : on ? "sim.conn.on" : "sim.conn.off");
+  renderSimButtons();
+}
+
+function simInfo() {
+  return state.target && state.target.sim ? state.target.sim : null;
+}
+
+function playerRunning() {
+  const data = state.simData;
+  return Boolean(data && data.player && data.player.running);
+}
+
+function renderSimButtons() {
+  const ready = Boolean(state.target && state.target.ready);
+  const running = playerRunning();
+  $("#sim-connect").disabled = !ready;
+  $("#sim-disconnect").disabled = !state.connected;
+  for (const id of ["#auto-start", "#c-send", "#release-all"]) $(id).disabled = !state.connected || running;
+  $("#auto-stop").disabled = !running;
+  for (const button of $$("#presets button")) button.disabled = !button.dataset.ok || !state.connected || running;
+  if (state.connected && !running) updateCustom();
+}
+
+function renderSim() {
+  const info = simInfo();
+  const box = $("#sim-target");
+  const target = state.target;
+  if (!target) {
+    box.replaceChildren(el("p", { class: "muted", i18n: "sim.no_target" }));
+  } else {
+    box.replaceChildren(
+      el("p", { class: "dev", text: target.ems.device_name }),
+      el("p", { class: "muted small", text: `${target.ems.manufacturer} · ${target.ems.file}` }),
+      target.ready ? el("p", { class: "small", i18n: "status.ready", params: { name: target.ems.device_name } })
+        : el("p", { class: "small", i18n: "sim.not_ready", params: { names: target.ems.missing.join(", ") } }));
+  }
+  renderPresets(info);
+  renderScenarios(info);
+  renderCustomPoints(info);
+  renderSimButtons();
+}
+
+function renderPresets(info) {
+  const grid = $("#presets");
+  grid.replaceChildren();
+  for (const p of info ? info.presets : []) {
+    const desc = p.available ? el("span", { class: "d", i18n: `sim.p.${p.key}.d`, params: p.params })
+      : el("span", { class: "d", i18n: `sim.why.${p.why}` });
+    const button = el("button", { type: "button", class: "preset" },
+      el("span", { class: "t", i18n: `sim.p.${p.key}.t`, params: p.params }), desc);
+    if (p.available) button.dataset.ok = "1";
+    button.addEventListener("click", async () => {
+      button.classList.remove("sent");
+      if (await simAction("/api/sim/send", { preset: p.id })) {
+        void button.offsetWidth;  // restart the animation
+        button.classList.add("sent");
+      }
+    });
+    grid.append(button);
+  }
+}
+
+function renderScenarios(info) {
+  const select = $("#auto-scenario");
+  const previous = select.value;
+  select.replaceChildren();
+  const why = $("#auto-why");
+  why.replaceChildren();
+  for (const sc of info ? info.scenarios : []) {
+    const label = { $t: `sim.sc.${sc.id}` };
+    select.append(el("option", { value: sc.id, disabled: !sc.available,
+      i18n: sc.available ? "sim.sc.option" : "sim.sc.unavailable", params: { label, steps: sc.steps } }));
+    if (!sc.available) {
+      why.append(el("li", {}, el("span", { i18n: `sim.sc.${sc.id}` }), " — ",
+        el("span", { i18n: `sim.why.${sc.why}`, params: sc.why_params })));
+    }
+  }
+  const available = info ? info.scenarios.filter((x) => x.available).map((x) => x.id) : [];
+  select.value = available.includes(previous) ? previous : available[0] || "";
+  const step = $("#auto-interval");
+  if (state.info) { step.min = String(state.info.min_step_s); step.max = String(state.info.max_step_s); }
+}
+
+function fillSelect(select, values) {
+  const previous = select.value;
+  select.replaceChildren(...values.map(([value, text]) => el("option", { value, text })));
+  if (values.some(([value]) => value === previous)) select.value = previous;
+}
+
+function renderCustomPoints(info) {
+  fillSelect($("#c-mode-point"), (info ? info.modes : []).map((m) => [m.fp, `${m.fp}.${m.cmd}`]));
+  fillSelect($("#c-restrict-point"), (info ? info.restrictions : []).map((r) => [r.fp, `${r.fp}.${r.dp}`]));
+  renderModeLiterals();
+  updateCustom();
+}
+
+function renderModeLiterals() {
+  const info = simInfo();
+  const mode = info && info.modes.find((m) => m.fp === $("#c-mode-point").value);
+  fillSelect($("#c-mode-value"), (mode ? mode.literals : []).map((lit) => [lit, lit]));
+}
+
+// Show the fields of the chosen kind of command, or why it cannot be sent.
+function updateCustom() {
+  const info = simInfo();
+  const kind = $("#c-type").value;
+  $("#c-mode").hidden = kind !== "mode";
+  $("#c-restrict").hidden = kind !== "restrict" && kind !== "release";
+  $("#c-restrict-values").hidden = kind !== "restrict";
+  let why = null;
+  if (kind === "tariff") why = "sim.why.not_sgcp_tariff";
+  else if (kind === "frequency") why = "sim.why.not_sgcp_frequency";
+  else if (kind === "mode" && !(info && info.modes.length)) why = "sim.why.no_mode";
+  else if (kind !== "mode" && !(info && info.restrictions.length)) why = "sim.why.no_restrict";
+  const note = $("#c-why");
+  note.hidden = !why;
+  if (why) msg(note, why);
+  $("#c-send").disabled = Boolean(why) || !state.connected || playerRunning();
+}
+
+function customCommand() {
+  const kind = $("#c-type").value;
+  if (kind === "mode") return { action: "mode", fp: $("#c-mode-point").value, value: $("#c-mode-value").value };
+  const fp = $("#c-restrict-point").value;
+  if (kind === "release") return { action: "release", fp };
+  return { action: "restrict", fp, max_kw: Number($("#c-max").value), min_kw: Number($("#c-min").value),
+    minutes: Number($("#c-minutes").value) };
+}
+
+// A command to the EMS: every one carries the page's confirmation, which the
+// server checks. True when it was accepted by the server.
+async function simAction(path, body) {
+  flash(null);
+  try {
+    await api(path, { method: "POST", body: { ...body, confirm: $("#sim-confirm").checked } });
+    return true;
+  } catch (error) {
+    flash(error);
+    return false;
+  } finally {
+    simPoll(true);
+  }
+}
+
+async function startPlayer() {
+  await simAction("/api/sim/start", { scenario: $("#auto-scenario").value,
+    interval_s: Number($("#auto-interval").value || 60), loop: $("#auto-loop").checked });
+}
+
+async function stopPlayer() {
+  flash(null);
+  $("#auto-stop").disabled = true;
+  try { await api("/api/sim/stop", { method: "POST", body: {} }); } catch (error) { flash(error); }
+  simPoll(true);
+}
+
+// Closing the page stops the player (best effort; the server's lease is the
+// guarantee): keepalive lets the request outlive the page, with its headers.
+function stopOnLeave() {
+  if (!playerRunning()) return;
+  try {
+    fetch("/api/sim/stop", { method: "POST", keepalive: true, credentials: "same-origin",
+      headers: { "Content-Type": "application/json", "X-Requested-With": "grd-sgr" }, body: "{}" });
+  } catch (_) { /* the lease stops it */ }
+}
+
+function fmtTime(iso) {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return String(iso || "");
+  return date.toLocaleTimeString(LOCALES[state.lang] || "en-GB", { hour12: false });
+}
+
+function chip(key, value, params, changed) {
+  const v = el("div", { class: changed ? "v changed" : "v" });
+  if (value && value.i18n) msg(v, value.i18n, value.params);
+  else plain(v, value === undefined || value === null || value === "" ? "—" : String(value));
+  const k = key.i18n ? el("div", { class: "k", i18n: key.i18n, params }) : el("div", { class: "k", text: key.text });
+  return el("div", { class: "chip" }, k, v);
+}
+
+function renderStatus(data) {
+  const bar = $("#statusbar");
+  const before = state.simData ? state.simData.states || {} : {};
+  const chips = [chip({ i18n: "sim.chip.target" }, state.target ? state.target.ems.device_name : "—")];
+  for (const [point, value] of Object.entries(data.states || {})) {
+    chips.push(chip({ text: point }, value, null, before[point] !== undefined && before[point] !== value));
+  }
+  chips.push(chip({ i18n: "sim.chip.evidence" }, { i18n: `sim.evidence.${data.evidence || "unknown"}` }));
+  chips.push(chip({ i18n: "sim.chip.sent" }, data.sent || 0));
+  const p = data.player;
+  chips.push(chip({ i18n: "sim.chip.player" }, p && p.running ? { i18n: `sim.sc.${p.scenario}` } : { i18n: "sim.auto.stopped" }));
+  chips.push(chip({ i18n: "sim.chip.poll" }, data.polled_utc ? fmtTime(data.polled_utc) : "—"));
+  bar.replaceChildren(...chips);
+  const reaction = $("#reaction");
+  reaction.hidden = !(typeof data.reaction_s === "number");
+  if (!reaction.hidden) msg(reaction, "sim.reaction", { s: data.reaction_s });
+}
+
+function renderPlayer(p) {
+  const line = $("#auto-status");
+  if (p && p.running) {
+    const step = p.index > 0 ? ((p.index - 1) % p.total) + 1 : 0;
+    const node = el("b", { i18n: "sim.auto.running", params: { scenario: { $t: `sim.sc.${p.scenario}` }, step,
+      total: p.total, interval: p.interval_s, mode: { $t: p.loop ? "sim.loop" : "sim.once" } } });
+    line.replaceChildren(node);
+  } else {
+    line.replaceChildren(el("span", { i18n: "sim.auto.stopped" }));
+  }
+}
+
+function eventNode(event, fresh) {
+  const side = ["grd", "ems", "err", "info"].includes(event.side) ? event.side : "info";
+  const title = el("div", { class: "ttl" });
+  if (event.badge) title.append(el("span", { class: `badge ${event.badge}`, i18n: `sim.badge.${event.badge}` }));
+  const text = el("span");
+  if (known(`sim.ev.${event.code}`)) msg(text, `sim.ev.${event.code}`, event.params);
+  else plain(text, `${event.code} ${JSON.stringify(event.params || {})}`);
+  title.append(text);
+  const card = el("div", { class: `ecard ${side}` }, el("div", { class: "who", i18n: `sim.who.${side}` }), title);
+  if (event.data && Object.keys(event.data).length) {
+    card.append(el("details", { class: "raw" }, el("summary", { i18n: "sim.raw" }),
+      el("pre", { text: JSON.stringify(event.data, null, 2) })));
+  }
+  const when = el("time", { class: "when", datetime: event.ts, text: fmtTime(event.ts) });
+  when.dataset.ts = event.ts;
+  return el("li", { class: fresh ? "ev new" : "ev" }, when, card);
+}
+
+function renderTimeline(events) {
+  const list = $("#timeline");
+  const fresh = state.simLastId > 0;  // the first load does not animate
+  for (const event of events) {
+    if (event.id <= state.simLastId) continue;
+    list.prepend(eventNode(event, fresh));
+    state.simLastId = event.id;
+  }
+  while (list.children.length > SIM_EVENTS_SHOWN) list.lastChild.remove();
+  $("#timeline-empty").hidden = list.children.length > 0;
+}
+
+// One poll of the timeline, then the next one scheduled: every 3 s while
+// connected or playing, slower in a background tab, with a back-off on errors.
+// A running player keeps being polled in the background: that is its lease.
+async function simPoll(soon) {
+  clearTimeout(state.simTimer);
+  state.simTimer = null;
+  if (state.simBusy) { if (soon) state.simTimer = setTimeout(simPoll, 300); return; }
+  state.simBusy = true;
+  let keepGoing = false;
+  try {
+    const data = await api(`/api/sim/timeline?after=${state.simLastId}`);
+    if (data.last_id !== undefined && data.last_id < state.simLastId) {  // a new session: start over
+      state.simLastId = 0;
+      $("#timeline").replaceChildren();
+    }
+    renderTimeline(data.events || []);
+    renderStatus(data);
+    renderPlayer(data.player);
+    state.simData = data;
+    if (data.connected !== state.connected) {
+      setConnected(data.connected);
+      if (data.connected) refreshConsole();  // a connection kept from before this page: fill the console too
+    } else renderSimButtons();
+    state.simDelay = document.hidden && !playerRunning() ? SIM_POLL_HIDDEN_MS : SIM_POLL_MS;
+    keepGoing = data.connected || playerRunning();
+  } catch (error) {
+    if (state.connected) setConnected(true, true);
+    state.simDelay = Math.min(state.simDelay * 2, 30000);
+    keepGoing = state.connected;
+  } finally {
+    state.simBusy = false;
+  }
+  if (keepGoing) state.simTimer = setTimeout(simPoll, state.simDelay);
+}
+
+function reformatTimes() {
+  for (const node of $$("#timeline time.when")) node.textContent = fmtTime(node.dataset.ts);
 }
 
 // -- start -------------------------------------------------------------------------------------------
@@ -598,20 +923,33 @@ async function start() {
   $("#run-tariffs").addEventListener("click", runTariffs);
   $("#connect").addEventListener("click", connectConsole);
   $("#refresh").addEventListener("click", refreshConsole);
-  $("#disconnect").addEventListener("click", async () => {
-    try { await api("/api/console/disconnect", { method: "POST", body: {} }); msg($("#console-status"), "k.disconnected"); }
-    catch (error) { flash(error); }
-  });
+  $("#disconnect").addEventListener("click", disconnectConsole);
   $("#auto").addEventListener("change", (event) => {
     clearInterval(state.consoleTimer);
     if (event.target.checked) state.consoleTimer = setInterval(refreshConsole, 5000);
   });
+
+  // simulator
+  $("#sim-connect").addEventListener("click", connectConsole);
+  $("#sim-disconnect").addEventListener("click", disconnectConsole);
+  $("#sim-setup").addEventListener("click", () => showTab("ems"));
+  $("#sim-refresh").addEventListener("click", () => simPoll(true));
+  $("#auto-start").addEventListener("click", startPlayer);
+  $("#auto-stop").addEventListener("click", stopPlayer);
+  $("#c-type").addEventListener("change", updateCustom);
+  $("#c-mode-point").addEventListener("change", renderModeLiterals);
+  $("#c-send").addEventListener("click", () => simAction("/api/sim/send", { custom: customCommand() }));
+  $("#release-all").addEventListener("click", () => simAction("/api/sim/release", {}));
+  window.addEventListener("pagehide", stopOnLeave);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) simPoll(true); });
+  window.addEventListener("hashchange", () => showTab(window.location.hash.slice(1), false));
 
   try {
     const data = await api("/api/target");
     state.target = data.target;
     renderTarget();
   } catch (error) { flash(error); }
+  showTab(window.location.hash.slice(1), false);
   loadHistory();
 }
 

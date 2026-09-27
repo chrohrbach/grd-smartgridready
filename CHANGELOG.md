@@ -17,6 +17,9 @@ gains a web interface, and every run gives an audit report.
   the contract of the reference EMS the bench tests itself against. It replaces
   `examples/casasmooth_grid_interface_rest.xml`; a vendor's EID belongs with
   its product.
+- The web interface uses the dark SmartGridready look of the simulator in
+  every tab; the Simulator tab comes first, and the tab in view is kept in the
+  address (`#compliance`…).
 
 ### Added
 - `grd-sgr ui`: a web interface for the whole bench. It describes the EMS from
@@ -57,7 +60,31 @@ gains a web interface, and every run gives an audit report.
   them.
 - `CONTRIBUTING.md` (Developer Certificate of Origin) and `SECURITY.md`.
 
+- The GRD simulator is back, as the first tab of the web interface, with the
+  look of the old simulator (dark panels, SmartGridready green, presets,
+  automatic mode, live timeline). It now speaks SmartGridready SGCP through the
+  EID and the official CommHandler, not a vendor webhook:
+  - presets and a custom command, derived from the EID: the enum literals of
+    its SGCP mode command, FlexMgmt `RestrictPower` for load shedding;
+    what the EID cannot carry is disabled, with the reason;
+  - the five scenarios of the old simulator as SGCP command sequences, played
+    by the server at a chosen pace, once or in a loop;
+  - a timeline of the commands sent beside the EMS's reactions (evidence
+    journal, with applied / observed / deferred / not applied badges) and the
+    states read back;
+  - new endpoints `/api/sim/send`, `/api/sim/release`, `/api/sim/start`,
+    `/api/sim/stop` and `/api/sim/timeline`. Each command needs the same
+    confirmation as the console.
+- The automatic mode always ends released (NORMAL, restriction off, on every
+  point it commanded): on Stop, at the end of a scenario, when the page closes
+  or stops polling (150 s lease), on disconnect or a new target, and when the
+  process stops. While it plays, the console, the presets and a compliance run
+  are refused (`player_running`).
+- Tariff and grid-frequency signals of the old simulator are listed, disabled:
+  they are not SGCP commands.
+
 ### Fixed
+- The console's 5-second read-back stops when the console disconnects.
 - `run --meter-eid` names the configuration values missing for the meter's EID
   instead of failing with a bare `KeyError` from the CommHandler, and refuses a
   meter it cannot build, as it refuses one it cannot read.

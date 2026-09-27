@@ -1,5 +1,7 @@
 """Web interface of the bench: describe an EMS, run the compliance tests, open
-the audit report, serve the tariff scenarios, and drive the EMS by hand.
+the audit report, serve the tariff scenarios, and drive the EMS as a grid
+operator would: by hand (presets, a custom command, the console) or with a
+scripted scenario, watching the EMS's reactions on a live timeline.
 
 Access. Local by default: it listens on 127.0.0.1 and every request needs the
 token printed at start-up (kept in an HttpOnly cookie, never in the page).
@@ -20,6 +22,7 @@ import asyncio
 import contextlib
 import hmac
 import json
+import math
 import re
 import secrets
 import shutil
@@ -36,6 +39,7 @@ from xml.etree import ElementTree as ET
 from aiohttp import web
 
 from . import __version__
+from . import simulator as sim
 from .client import (
     SECRET_NAME_RE,
     SgrDevice,
@@ -80,6 +84,8 @@ REPORTS = {
 APP_CSP = ("default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
            "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
 REPORT_CSP = "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'"
+SIM_EVENTS_KEPT = 300
+RELEASE_BACKOFF_S = (0.0, 2.0, 5.0)
 UNAUTHORIZED = ("This grd-sgr interface needs its access token. Open the address that "
                 "`grd-sgr ui` printed when it started; it carries the token.")
 
@@ -100,6 +106,10 @@ class UiConfig:
     max_hold_s: float = 600.0
     max_dwell_s: float = 3600.0
     min_dwell_s: float = 10.0
+    min_step_s: float = 5.0  # shortest step of the scenario player
+    max_step_s: float = 3600.0
+    sim_lease_s: float = 150.0  # the player stops, and releases, when no page has polled for this long
+    sim_read_every_s: float = 2.0  # read-back and journal, at most this often per session
 
     @property
     def public(self) -> bool:
@@ -180,6 +190,55 @@ class Console:
 
 
 @dataclass
+class Player:
+    """The scenario player. It runs on the server, as a task of the session:
+    it keeps its pace in a background tab, and its release runs whatever
+    ends it (Stop, the page gone quiet, the session or the process ending)."""
+    scenario: str
+    interval_s: float
+    loop: bool
+    total: int
+    lease_until: float
+    started_utc: str = field(default_factory=utc_now_iso)
+    index: int = 0
+    running: bool = True
+    releasing: bool = False
+    stop_reason: str | None = None
+    touched: set[tuple[str, str]] = field(default_factory=set)
+    task: asyncio.Task | None = None
+
+    def view(self) -> dict[str, Any]:
+        return {"scenario": self.scenario, "interval_s": self.interval_s, "loop": self.loop, "total": self.total,
+                "index": self.index, "running": self.running, "stop_reason": self.stop_reason,
+                "started_utc": self.started_utc}
+
+
+@dataclass
+class SimState:
+    """The simulator's timeline: commands sent, the EMS's journal, read-backs."""
+    events: list[dict[str, Any]] = field(default_factory=list)
+    next_id: int = 1
+    ev_cursor: int | None = None
+    evidence: str = "unknown"  # unknown | none | ok | error
+    evidence_error: str = ""
+    reaction_s: float | None = None
+    last_read: float = 0.0
+    states: dict[str, Any] = field(default_factory=dict)
+    state_errors: dict[str, str] = field(default_factory=dict)
+    sent: int = 0
+    player: Player | None = None
+
+    def add(self, side: str, code: str, params: dict[str, Any] | None = None, *, badge: str | None = None,
+            data: Any = None) -> dict[str, Any]:
+        event = {"id": self.next_id, "ts": utc_now_iso(), "side": side, "code": code, "params": params or {},
+                 "badge": badge, "data": data}
+        self.next_id += 1
+        self.events.append(event)
+        del self.events[:-SIM_EVENTS_KEPT]
+        return event
+
+
+@dataclass
 class Session:
     id: str
     dir: Path
@@ -187,9 +246,15 @@ class Session:
     target: Target | None = None
     jobs: dict[str, Job] = field(default_factory=dict)
     console: Console | None = None
+    sim: SimState = field(default_factory=SimState)
+    write_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     def running(self) -> Job | None:
         return next((j for j in self.jobs.values() if j.status == "running"), None)
+
+    def playing(self) -> Player | None:
+        p = self.sim.player
+        return p if p is not None and p.running else None
 
 
 CFG = web.AppKey("cfg", UiConfig)
@@ -332,7 +397,18 @@ def _target_view(t: Target) -> dict[str, Any]:
                          "point": ".".join(t.meter_point) if t.meter_point else None,
                          "same_as_ems": t.meter_eid_path == t.eid_path}
     view["ready"] = not view["ems"]["missing"] and (view["meter"] is None or not view["meter"]["missing"])
+    view["sim"] = sim.view(_caps(t))
     return view
+
+
+def _instantiated(t: Target) -> Eid:
+    raw = t.eid_path.read_text(encoding="utf-8")
+    return parse_eid(instantiate_text(raw, resolve_properties(raw, t.props)))
+
+
+def _caps(t: Target) -> sim.Capabilities:
+    """What the simulator may send to this EMS: derived from its EID only."""
+    return sim.capabilities(_instantiated(t))
 
 
 def _merge_props(given: Any, previous: dict[str, str]) -> dict[str, str]:
@@ -397,12 +473,20 @@ def _evict(app: web.Application, idle_s: float | None = None) -> None:
     limit = cfg.session_idle_s if idle_s is None else idle_s
     now = time.monotonic()
     for s in list(sessions.values()):
-        if s.running() or now - s.last_seen < limit:
+        # A playing scenario keeps its session: the player stops by itself,
+        # and releases, once no page has polled it for the lease time.
+        if s.running() or s.playing() or now - s.last_seen < limit:
             continue
         sessions.pop(s.id, None)
-        if s.console is not None:
-            asyncio.ensure_future(s.console.device.close())
+        asyncio.ensure_future(_session_end(s))
         shutil.rmtree(s.dir, ignore_errors=True)
+
+
+async def _session_end(s: Session) -> None:
+    """The session ends: the player releases what it commanded, then the
+    connection to the EMS is closed."""
+    await _player_stop(s, "session")
+    await _console_close(s)
 
 
 @web.middleware
@@ -483,6 +567,7 @@ async def api_info(request: web.Request) -> web.Response:
         "mode": "public" if cfg.public else "local", "allowed_targets": list(cfg.allowed_targets or ()),
         "tests": catalogue, "scenarios": list(SCENARIOS), "tariffs_available": not cfg.public,
         "max_hold_s": cfg.max_hold_s, "max_dwell_s": cfg.max_dwell_s,
+        "min_step_s": cfg.min_step_s, "max_step_s": cfg.max_step_s,
     })
 
 
@@ -565,6 +650,9 @@ async def api_target_post(request: web.Request) -> web.Response:
     if target.meter_eid_path is not None:
         _check_reach(cfg, target.meter_eid_path.read_text(encoding="utf-8"), target.meter_props, "meter")
     if s.console is not None:
+        # Another EMS, or other settings: the player releases the one it
+        # drove, through the connection it drove it with, before it closes.
+        await _player_stop(s, "session")
         await _console_close(s)
     s.target = target
     _prune(s)
@@ -574,12 +662,18 @@ async def api_target_post(request: web.Request) -> web.Response:
 # -- API: jobs -------------------------------------------------------------------------------
 
 
+def _busy(app: web.Application) -> int:
+    """Runs and scenario players in progress on this instance."""
+    sessions = app[SESSIONS].values()
+    return (sum(1 for x in sessions for j in x.jobs.values() if j.status == "running")
+            + sum(1 for x in sessions if x.playing()))
+
+
 def _new_job(request: web.Request, s: Session, kind: str) -> Job:
     cfg = request.app[CFG]
     if s.running():
         raise Refused(409, "run_already", "a run is already in progress in this session")
-    running = sum(1 for x in request.app[SESSIONS].values() for j in x.jobs.values() if j.status == "running")
-    if running >= cfg.max_running:
+    if _busy(request.app) >= cfg.max_running:
         raise Refused(503, "instance_busy", "this instance is busy; try again in a few minutes")
     job = Job(id=secrets.token_hex(6), kind=kind, started_utc=utc_now_iso())
     s.jobs[job.id] = job
@@ -682,6 +776,8 @@ async def api_jobs_post(request: web.Request) -> web.Response:
         if not view["ready"]:
             names = ", ".join(view["ems"]["missing"])
             raise Refused(400, "config_missing", "some configuration values are missing: " + names, names=names)
+        if s.playing():
+            raise Refused(409, "player_running", "a scenario is playing; stop it first")
         selection, settings = _selection(body), _settings(cfg, body)
         job = _new_job(request, s, kind)
         job.task = asyncio.ensure_future(
@@ -820,6 +916,7 @@ async def api_console_connect(request: web.Request) -> web.Response:
         raise Refused(400, "no_target", "describe the EMS first")
     if s.running():
         raise Refused(409, "console_waits", "a run is in progress; the console waits for it")
+    await _player_stop(s, "session")
     await _console_close(s)
     redactor = s.target.redactor()
     device = SgrDevice(s.target.eid_path, s.target.props)
@@ -836,6 +933,9 @@ async def api_console_connect(request: web.Request) -> web.Response:
         await _console_close(s)
         raise Refused(502, "no_readable_point", "connected, but no data point can be read (authentication fails "
                       "silently in the CommHandler): " + points[0]["error"], detail=points[0]["error"])
+    s.sim.ev_cursor, s.sim.evidence, s.sim.evidence_error, s.sim.reaction_s = None, "unknown", "", None
+    s.sim.states, s.sim.state_errors, s.sim.last_read = {}, {}, 0.0
+    s.sim.add("info", "connected", {"device": redactor.text(parse_eid(s.target.eid_path).device_name)})
     return web.json_response({"connected": True, "points": points, "warnings": [
         redactor.text(w) for w in device.connect_warnings]})
 
@@ -847,12 +947,10 @@ async def api_console_points(request: web.Request) -> web.Response:
 
 async def api_console_write(request: web.Request) -> web.Response:
     s = _require_session(request)
-    console = _console(s)
-    if s.running():
-        raise Refused(409, "console_waits", "a run is in progress; the console waits for it")
+    _console(s)
+    _may_command(s)
     body = await _body(request)
-    if body.get("confirm") is not True:
-        raise Refused(400, "confirm_write", "a write commands the real installation: confirm it first")
+    _confirmed(body)
     fp_name, dp_name = str(body.get("fp") or ""), str(body.get("dp") or "")
     eid = parse_eid(s.target.eid_path)
     fp = eid.profile(fp_name)
@@ -865,17 +963,7 @@ async def api_console_write(request: web.Request) -> web.Response:
         literals = ", ".join(dp.enum_literals)
         raise Refused(400, "not_a_literal", f"{value!r} is not one of {literals}", value=repr(value),
                       literals=literals)
-    entry: dict[str, Any] = {"ts": utc_now_iso(), "fp": fp_name, "dp": dp_name,
-                             "value": console.redactor.value(value)}
-    try:
-        await console.device.write(fp_name, dp_name, value)
-        entry["ok"] = True
-    except Exception as exc:
-        entry["ok"] = False
-        entry["error"] = console.redactor.text(describe_error(exc))
-    console.log.insert(0, entry)
-    del console.log[50:]
-    return web.json_response({"write": entry})
+    return web.json_response({"write": await _command(s, fp_name, dp_name, value, "console")})
 
 
 async def api_console_evidence(request: web.Request) -> web.Response:
@@ -899,8 +987,306 @@ async def api_console_evidence(request: web.Request) -> web.Response:
 async def api_console_disconnect(request: web.Request) -> web.Response:
     s = _session(request, create=False)
     if s is not None:
+        await _player_stop(s, "session")
+        if s.console is not None:
+            s.sim.add("info", "disconnected")
         await _console_close(s)
     return web.json_response({"connected": False})
+
+
+# -- API: simulator --------------------------------------------------------------------------
+
+
+def _confirmed(body: dict[str, Any]) -> None:
+    if body.get("confirm") is not True:
+        raise Refused(400, "confirm_write", "a write commands the real installation: confirm it first")
+
+
+def _may_command(s: Session) -> None:
+    """A command by hand waits for a run, and for the scenario player."""
+    if s.running():
+        raise Refused(409, "console_waits", "a run is in progress; the console waits for it")
+    if s.playing():
+        raise Refused(409, "player_running", "a scenario is playing; stop it first")
+
+
+async def _command(s: Session, fp: str, dp: str, value: Any, origin: str, player: Player | None = None,
+                   code: str | None = None, params: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Send one command through the CommHandler, and record it in the console's
+    log and on the timeline. A failure is recorded, not raised."""
+    console = _console(s)
+    shown = console.redactor.value(value)
+    entry: dict[str, Any] = {"ts": utc_now_iso(), "fp": fp, "dp": dp, "value": shown, "origin": origin}
+    async with s.write_lock:
+        try:
+            await console.device.write(fp, dp, value)
+            entry["ok"] = True
+        except Exception as exc:
+            entry["ok"] = False
+            entry["error"] = console.redactor.text(describe_error(exc))
+        del console.device.calls[:-200]  # a long session must not grow without end
+    console.log.insert(0, entry)
+    del console.log[50:]
+    s.sim.sent += 1
+    if player is not None:
+        player.touched.add((fp, dp))
+    data = {"fp": fp, "dp": dp, "value": shown, "origin": origin}
+    if entry["ok"]:
+        if code is None:
+            code, params = sim.command_event(fp, dp, shown)
+        s.sim.add("grd", code, {**(params or {}), "origin": {"$t": f"sim.origin.{origin}"}}, data=data)
+    else:
+        s.sim.add("err", "cmd_failed", {"point": f"{fp}.{dp}", "error": entry["error"]}, data=data)
+    return entry
+
+
+async def _release(s: Session, writes: list[tuple[str, str, Any]], origin: str) -> bool:
+    """Write the released states, retrying each (as the compliance tests do)."""
+    all_ok = True
+    for fp, dp, value in writes:
+        entry: dict[str, Any] = {"ok": False, "error": ""}
+        for pause in RELEASE_BACKOFF_S:
+            await asyncio.sleep(pause)
+            if s.console is None:
+                break
+            entry = await _command(s, fp, dp, value, origin)
+            if entry["ok"]:
+                break
+        if entry["ok"]:
+            s.sim.add("info", "restored", {"point": f"{fp}.{dp}", "value": sim.RELEASED if dp != sim.RESTRICTION_DP
+                                           else "RestrictionActive=false"})
+        else:
+            all_ok = False
+            s.sim.add("err", "restore_failed", {"point": f"{fp}.{dp}", "error": entry.get("error") or "—"})
+    return all_ok
+
+
+async def _player_run(s: Session, p: Player, caps: sim.Capabilities) -> None:
+    try:
+        while p.stop_reason is None:
+            if p.index >= p.total and not p.loop:
+                p.stop_reason = "finished"
+                break
+            reason, writes = sim.step_writes(caps, p.scenario, p.index, p.interval_s)
+            s.sim.add("info", "player_step", {"step": p.index % p.total + 1, "total": p.total,
+                                              "reason": {"$t": f"sim.reason.{reason}"}})
+            for fp, dp, value in writes:
+                if s.console is None:
+                    break
+                await _command(s, fp, dp, value, "player", player=p)
+            p.index += 1
+            due = time.monotonic() + p.interval_s
+            while p.stop_reason is None and time.monotonic() < due:
+                if time.monotonic() > p.lease_until:
+                    p.stop_reason = "lease"
+                    break
+                await asyncio.sleep(min(1.0, max(0.0, due - time.monotonic())))
+    except asyncio.CancelledError:
+        p.stop_reason = p.stop_reason or "user"
+    except Exception as exc:  # recorded; the release below still runs
+        p.stop_reason = "error"
+        s.sim.add("err", "player_error", {"error": describe_error(exc)})
+    finally:
+        # Always end released: NORMAL, and no restriction, on every point the
+        # player commanded — whatever stopped it.
+        p.releasing = True
+        writes = [w for w in caps.release_writes() if (w[0], w[1]) in p.touched]
+        if writes and s.console is not None:
+            await _release(s, writes, "release")
+        p.running = False
+        if p.stop_reason == "finished":
+            s.sim.add("info", "player_finished", {"scenario": {"$t": f"sim.sc.{p.scenario}"}})
+        else:
+            s.sim.add("info", "player_stopped", {"why": {"$t": f"sim.stop.{p.stop_reason or 'user'}"}})
+
+
+async def _player_stop(s: Session, reason: str) -> None:
+    """Stop the player and wait for its release to be written."""
+    p = s.sim.player
+    if p is None or p.task is None or p.task.done():
+        return
+    p.stop_reason = p.stop_reason or reason
+    if not p.releasing:  # a second stop must not cut the release short
+        p.task.cancel()
+    # Shielded: a request dropped by its client must not cancel the release.
+    with contextlib.suppress(asyncio.CancelledError, Exception):
+        await asyncio.shield(p.task)
+
+
+def _number(body: dict[str, Any], key: str, default: float, low: float, high: float) -> float:
+    try:
+        value = float(body.get(key, default))
+    except (TypeError, ValueError):
+        raise Refused(400, "not_a_number", f"{key} must be a number", field=key) from None
+    if not math.isfinite(value):
+        raise Refused(400, "not_a_number", f"{key} must be a number", field=key)
+    return min(max(value, low), high)
+
+
+def _custom_writes(caps: sim.Capabilities, custom: dict[str, Any]) -> list[tuple[str, str, Any]]:
+    action = str(custom.get("action") or "")
+    fp = str(custom.get("fp") or "")
+    if action == "mode":
+        mp = next((m for m in caps.modes if m.fp == fp), None)
+        value = custom.get("value")
+        if mp is None:
+            raise Refused(400, "not_writable", f"{fp} has no operating-mode command in this EID", point=fp or "—")
+        if value not in mp.literals:
+            literals = ", ".join(mp.literals)
+            raise Refused(400, "not_a_literal", f"{value!r} is not one of {literals}", value=repr(value),
+                          literals=literals)
+        return [(mp.fp, mp.cmd, value)]
+    if action in ("restrict", "release"):
+        if fp not in caps.restrictions:
+            raise Refused(400, "not_writable", f"{fp}.RestrictPower is not a writable data point of this EID",
+                          point=f"{fp}.{sim.RESTRICTION_DP}")
+        if action == "release":
+            return [(fp, sim.RESTRICTION_DP, sim.NEUTRAL_RESTRICTION)]
+        max_kw = _number(custom, "max_kw", sim.SHED_KW, -1000.0, 1000.0)
+        min_kw = _number(custom, "min_kw", -1000.0, -1000.0, 1000.0)
+        if min_kw > max_kw:
+            raise Refused(400, "restriction_range", "the minimum power is above the maximum")
+        minutes = int(_number(custom, "minutes", 30, 1, 1440))
+        return [(fp, sim.RESTRICTION_DP, sim.restriction(max_kw, minutes, min_kw))]
+    raise Refused(400, "unknown_action", f"unknown kind of command: {action!r}", action=repr(action))
+
+
+async def api_sim_send(request: web.Request) -> web.Response:
+    """A preset, or a custom mode or restriction, by hand."""
+    s = _require_session(request)
+    _console(s)
+    _may_command(s)
+    body = await _body(request)
+    _confirmed(body)
+    caps = _caps(s.target)
+    if body.get("preset") is not None:
+        writes = sim.preset_writes(caps, str(body["preset"]))
+        if writes is None:
+            raise Refused(400, "preset_unavailable", "this EID cannot carry that preset")
+    elif isinstance(body.get("custom"), dict):
+        writes = _custom_writes(caps, body["custom"])
+    else:
+        raise Refused(400, "unknown_action", "give a preset or a custom command", action="—")
+    entries = [await _command(s, fp, dp, value, "manual") for fp, dp, value in writes]
+    return web.json_response({"writes": entries})
+
+
+async def api_sim_release(request: web.Request) -> web.Response:
+    """Back to normal: the released state on every point the EID declares."""
+    s = _require_session(request)
+    _console(s)
+    _may_command(s)
+    _confirmed(await _body(request))
+    ok = await _release(s, _caps(s.target).release_writes(), "release")
+    return web.json_response({"released": ok})
+
+
+async def api_sim_start(request: web.Request) -> web.Response:
+    cfg, s = request.app[CFG], _require_session(request)
+    _console(s)
+    _may_command(s)
+    body = await _body(request)
+    _confirmed(body)
+    caps = _caps(s.target)
+    scenario = str(body.get("scenario") or "")
+    offered = {x["id"]: x for x in sim.scenarios(caps)}
+    if scenario not in offered:
+        raise Refused(400, "unknown_scenario", f"unknown scenario: {scenario!r}", scenario=repr(scenario))
+    if not offered[scenario]["available"]:
+        raise Refused(400, "scenario_unavailable", "this EID cannot carry that scenario")
+    if _busy(request.app) >= cfg.max_running:
+        raise Refused(503, "instance_busy", "this instance is busy; try again in a few minutes")
+    interval = _number(body, "interval_s", 60.0, cfg.min_step_s, cfg.max_step_s)
+    p = Player(scenario=scenario, interval_s=interval, loop=bool(body.get("loop")), total=offered[scenario]["steps"],
+               lease_until=time.monotonic() + cfg.sim_lease_s)
+    s.sim.player = p
+    s.sim.add("info", "player_started", {"scenario": {"$t": f"sim.sc.{scenario}"}, "interval": f"{interval:g}",
+                                         "mode": {"$t": "sim.loop" if p.loop else "sim.once"}})
+    p.task = asyncio.ensure_future(_player_run(s, p, caps))
+    return web.json_response({"player": p.view()})
+
+
+async def api_sim_stop(request: web.Request) -> web.Response:
+    s = _session(request, create=False)
+    if s is None:
+        return web.json_response({"player": None})
+    await _player_stop(s, "user")
+    return web.json_response({"player": s.sim.player.view() if s.sim.player else None})
+
+
+async def _sim_observe(s: Session) -> None:
+    """Read back the operating modes and fetch the EMS's new journal entries."""
+    console = s.console
+    if console is None:
+        return
+    caps = _caps(s.target)
+    for mp in caps.modes:
+        if mp.state is None:
+            continue
+        point = f"{mp.fp}.{mp.state}"
+        try:
+            value = console.redactor.value(_read_json_text(await console.device.read(mp.fp, mp.state)))
+        except Exception as exc:
+            error = console.redactor.text(describe_error(exc))
+            if s.sim.state_errors.get(point) != error:
+                s.sim.state_errors[point] = error
+                s.sim.add("err", "state_error", {"point": point, "error": error})
+            continue
+        s.sim.state_errors.pop(point, None)
+        if point not in s.sim.states or s.sim.states[point] != value:
+            s.sim.states[point] = value
+            s.sim.add("ems", "state", {"point": point, "value": str(value)})
+    del console.device.calls[:-200]
+    evidence = s.target.evidence()
+    if evidence is None:
+        s.sim.evidence = "none"
+        return
+    try:
+        if s.sim.ev_cursor is None:
+            status = await evidence.status()
+            s.sim.ev_cursor = int(status.get("last_seq") or 0)
+            declared = status.get("declared") or {}
+            reaction = declared.get("reaction_time_s") if isinstance(declared, dict) else None
+            s.sim.reaction_s = float(reaction) if isinstance(reaction, (int, float)) else None
+        events = await evidence.events(after_seq=s.sim.ev_cursor, limit=100)
+    except Exception as exc:
+        error = console.redactor.text(describe_error(exc))
+        if s.sim.evidence != "error" or s.sim.evidence_error != error:
+            s.sim.add("err", "evidence_error", {"error": error})
+        s.sim.evidence, s.sim.evidence_error = "error", error
+        return
+    s.sim.evidence, s.sim.evidence_error = "ok", ""
+    for e in events:
+        s.sim.ev_cursor = max(s.sim.ev_cursor, e.seq)
+        raw = console.redactor.value(e.__dict__)
+        side, code, badge, params = sim.evidence_event(raw)
+        s.sim.add(side, code, params, badge=badge, data=raw)
+
+
+async def api_sim_timeline(request: web.Request) -> web.Response:
+    """The timeline after event ``after``, the player and what was read back.
+    Polling it keeps the player's lease: a page gone quiet stops the player."""
+    cfg = request.app[CFG]
+    s = _session(request, create=False)
+    try:
+        after = int(request.query.get("after", "0"))
+    except ValueError:
+        after = 0
+    if s is None:
+        return web.json_response({"connected": False, "events": [], "player": None})
+    p = s.playing()
+    if p is not None:
+        p.lease_until = time.monotonic() + cfg.sim_lease_s
+    now = time.monotonic()
+    if s.console is not None and s.target is not None and now - s.sim.last_read >= cfg.sim_read_every_s:
+        s.sim.last_read = now
+        await _sim_observe(s)
+    events = [e for e in s.sim.events if e["id"] > after][-200:]
+    return web.json_response({
+        "connected": s.console is not None, "events": events, "last_id": s.sim.next_id - 1,
+        "player": s.sim.player.view() if s.sim.player else None, "states": s.sim.states,
+        "evidence": s.sim.evidence, "reaction_s": s.sim.reaction_s, "sent": s.sim.sent, "polled_utc": utc_now_iso(),
+    })
 
 
 # -- application -----------------------------------------------------------------------------
@@ -922,7 +1308,7 @@ async def _on_cleanup(app: web.Application) -> None:
         for job in s.jobs.values():
             if job.task is not None and not job.task.done():
                 job.task.cancel()
-        await _console_close(s)
+        await _session_end(s)
     shutil.rmtree(app[CFG].workdir, ignore_errors=True)
 
 
@@ -950,6 +1336,11 @@ def create_app(cfg: UiConfig) -> web.Application:
     app.router.add_post("/api/console/write", api_console_write)
     app.router.add_get("/api/console/evidence", api_console_evidence)
     app.router.add_post("/api/console/disconnect", api_console_disconnect)
+    app.router.add_post("/api/sim/send", api_sim_send)
+    app.router.add_post("/api/sim/release", api_sim_release)
+    app.router.add_post("/api/sim/start", api_sim_start)
+    app.router.add_post("/api/sim/stop", api_sim_stop)
+    app.router.add_get("/api/sim/timeline", api_sim_timeline)
     app.on_startup.append(_on_startup)
     app.on_cleanup.append(_on_cleanup)
     return app

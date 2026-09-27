@@ -450,6 +450,283 @@ async def test_the_strings_are_served_as_a_script_under_the_csp(ui):
     assert '<script src="/i18n.js" defer></script>' in page
     assert not re.findall(r"<script(?![^>]*\ssrc=)", page)  # no inline script
     assert not re.findall(r"\son[a-z]+=", page)  # no inline handler
+    assert not re.findall(r"\sstyle=", page)  # no inline style: style-src 'self' would drop it
     for name in ("app.js", "i18n.js"):
         source = (STATIC / name).read_text(encoding="utf-8")
         assert "eval(" not in source and "new Function" not in source and "innerHTML" not in source, name
+        assert "insertAdjacentHTML" not in source and "outerHTML" not in source, name
+
+
+# -- the simulator ---------------------------------------------------------------------------
+
+
+def without_profile(xml: str, name: str) -> str:
+    blocks = re.findall(r"<functionalProfileListElement>.*?</functionalProfileListElement>", xml, flags=re.S)
+    doomed = [b for b in blocks if f"<functionalProfileName>{name}</functionalProfileName>" in b]
+    assert len(doomed) == 1, name
+    return xml.replace(doomed[0], "")
+
+
+def without_literal(xml: str, literal: str) -> str:
+    out, n = re.subn(rf"<enumEntry>\s*<literal>{literal}</literal>\s*</enumEntry>", "", xml)
+    assert n, literal
+    return out
+
+
+def sim_view(xml: str) -> dict:
+    from grd_sgr import simulator
+    from grd_sgr.eid import parse_eid
+
+    return simulator.view(simulator.capabilities(parse_eid(xml)))
+
+
+def test_the_presets_and_scenarios_are_what_the_example_eid_declares():
+    view = sim_view(EXAMPLE_XML)
+    assert view["modes"] == [{"fp": "UniDirFlexLoadMgmt", "cmd": "OpModeLoadCmd", "state": "OpLoadState",
+                              "literals": ["NORMAL", "REDUCED", "MAX", "LOCKED"]}]
+    assert view["restrictions"] == [{"fp": "FlexMgmt", "dp": "RestrictPower"}]
+    presets = {p["id"]: p for p in view["presets"]}
+    assert [p["id"] for p in view["presets"] if p["kind"] == "mode"] == [
+        "mode:UniDirFlexLoadMgmt:MAX", "mode:UniDirFlexLoadMgmt:LOCKED", "mode:UniDirFlexLoadMgmt:REDUCED",
+        "mode:UniDirFlexLoadMgmt:NORMAL"]
+    assert presets["mode:UniDirFlexLoadMgmt:LOCKED"]["writes"] == [
+        {"fp": "UniDirFlexLoadMgmt", "dp": "OpModeLoadCmd", "value": "LOCKED"}]
+    shed = presets["restrict:FlexMgmt"]["writes"][0]
+    assert shed["dp"] == "RestrictPower" and shed["value"]["RestrictionActive"] is True
+    assert shed["value"]["Restriction"]["MaximumPowerKw"] == 3.0
+    assert presets["release:FlexMgmt"]["writes"][0]["value"]["RestrictionActive"] is False
+    # What SGCP cannot carry is shown, disabled, with the reason — and never sent.
+    for pid, why in (("tariff:low", "not_sgcp_tariff"), ("tariff:high", "not_sgcp_tariff"),
+                     ("frequency", "not_sgcp_frequency")):
+        assert presets[pid]["available"] is False and presets[pid]["why"] == why and not presets[pid]["writes"]
+    assert {s["id"]: s["available"] for s in view["scenarios"]} == {
+        "day": True, "evening_peak": True, "sunny": True, "constraint": True, "stress": True}
+
+
+def test_a_missing_profile_disables_what_needs_it_and_says_why():
+    view = sim_view(without_profile(EXAMPLE_XML, "FlexMgmt"))
+    presets = {p["id"]: p for p in view["presets"]}
+    assert presets["restrict:-"]["available"] is False and presets["restrict:-"]["why"] == "no_restrict"
+    assert not [p for p in view["presets"] if p["kind"] == "release"]
+    assert presets["mode:UniDirFlexLoadMgmt:LOCKED"]["available"] is True
+    scenarios = {s["id"]: s for s in view["scenarios"]}
+    assert {k for k, s in scenarios.items() if not s["available"]} == {"evening_peak", "constraint"}
+    assert scenarios["constraint"]["why"] == "no_restrict"
+
+    view = sim_view(without_profile(EXAMPLE_XML, "UniDirFlexLoadMgmt"))
+    assert view["modes"] == [] and view["restrictions"]
+    modes = [p for p in view["presets"] if p["kind"] == "mode"]
+    assert modes and all(p["why"] == "no_mode" and not p["writes"] for p in modes)
+    assert not any(s["available"] for s in view["scenarios"])
+
+    view = sim_view(without_literal(EXAMPLE_XML, "MAX"))
+    assert "mode:UniDirFlexLoadMgmt:MAX" not in {p["id"] for p in view["presets"]}
+    scenarios = {s["id"]: s for s in view["scenarios"]}
+    assert scenarios["day"]["why"] == "no_literal" and scenarios["day"]["why_params"]["literal"] == "MAX/MAX_LOAD"
+    assert scenarios["constraint"]["available"] is True
+
+
+@pytest.fixture
+async def sim_ui(tmp_path):
+    client = TestClient(TestServer(create_app(config(tmp_path, min_step_s=0.05, sim_read_every_s=0.0))),
+                        cookie_jar=aiohttp.CookieJar(unsafe=True))
+    await client.start_server()
+    try:
+        yield client
+    finally:
+        await client.close()
+
+
+async def connected(client: TestClient, ems) -> dict:
+    data = await set_target(client, ems, evidence={"url": ems.evidence_url, "header_name": "Authorization",
+                                                   "header_value": f"Bearer {ems.ems.token()}"})
+    resp = await post(client, "/api/console/connect", {})
+    assert resp.status == 200, await resp.text()
+    return data
+
+
+async def until(check, timeout: float = 10.0) -> None:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while not check():
+        assert loop.time() < deadline, "timed out"
+        await asyncio.sleep(0.02)
+
+
+async def timeline(client: TestClient, after: int = 0) -> dict:
+    resp = await get(client, f"/api/sim/timeline?after={after}")
+    assert resp.status == 200
+    return await resp.json()
+
+
+async def stopped(client: TestClient, timeout: float = 10.0) -> dict:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while True:
+        data = await timeline(client)
+        if data["player"] and not data["player"]["running"]:
+            return data
+        assert loop.time() < deadline, "the player did not stop"
+        await asyncio.sleep(0.05)
+
+
+async def test_the_target_carries_what_the_simulator_may_send(ui, fake_ems):
+    data = await set_target(ui, fake_ems)
+    assert data["target"]["sim"] == sim_view(EXAMPLE_XML)
+    quiet = await timeline(ui)
+    assert quiet["connected"] is False and quiet["events"] == [] and quiet["player"] is None
+
+
+async def test_a_preset_shows_the_command_and_the_ems_reaction_on_the_timeline(sim_ui, fake_ems):
+    fake_ems.ems.api_key = "s3cr3t-api-key"
+    await connected(sim_ui, fake_ems)
+    first = await timeline(sim_ui)
+    assert first["connected"] is True and first["evidence"] == "ok" and first["reaction_s"] == 1.0
+    assert first["states"] == {"UniDirFlexLoadMgmt.OpLoadState": "NORMAL"}
+    unconfirmed = await post(sim_ui, "/api/sim/send", {"preset": "mode:UniDirFlexLoadMgmt:LOCKED"})
+    assert unconfirmed.status == 400 and (await unconfirmed.json())["code"] == "confirm_write"
+    assert fake_ems.ems.state == "NORMAL"
+    for preset in ("tariff:low", "frequency", "nope"):
+        resp = await post(sim_ui, "/api/sim/send", {"preset": preset, "confirm": True})
+        assert resp.status == 400 and (await resp.json())["code"] == "preset_unavailable", preset
+    resp = await post(sim_ui, "/api/sim/send", {"preset": "mode:UniDirFlexLoadMgmt:LOCKED", "confirm": True})
+    assert resp.status == 200 and fake_ems.ems.state == "LOCKED"
+    later = await timeline(sim_ui, first["last_id"])
+    events = later["events"]
+    assert events and all(e["id"] > first["last_id"] for e in events)
+    codes = [(e["side"], e["code"]) for e in events]
+    assert ("grd", "cmd_mode") in codes and ("ems", "ev_external_command") in codes and ("ems", "state") in codes
+    decision = next(e for e in events if e["code"] == "ev_decision")
+    assert decision["badge"] == "applied" and decision["params"]["result"] == "activated"
+    sent = next(e for e in events if e["code"] == "cmd_mode")
+    assert sent["params"]["point"] == "UniDirFlexLoadMgmt.OpModeLoadCmd" and sent["params"]["value"] == "LOCKED"
+    assert later["states"] == {"UniDirFlexLoadMgmt.OpLoadState": "LOCKED"} and later["sent"] == 1
+    assert "s3cr3t-api-key" not in json.dumps(later)
+    # The console's log shows the simulator's commands too.
+    log = (await (await get(sim_ui, "/api/console/points")).json())["log"]
+    assert log[0]["value"] == "LOCKED" and log[0]["origin"] == "manual"
+    assert (await post(sim_ui, "/api/sim/release", {"confirm": True})).status == 200
+    assert fake_ems.ems.state == "NORMAL" and fake_ems.ems.restriction["RestrictionActive"] is False
+
+
+async def test_a_custom_command_is_checked_against_the_eid(sim_ui, fake_ems):
+    await connected(sim_ui, fake_ems)
+    for custom, code in (({"action": "mode", "fp": "UniDirFlexLoadMgmt", "value": "SIDEWAYS"}, "not_a_literal"),
+                         ({"action": "mode", "fp": "Nope", "value": "LOCKED"}, "not_writable"),
+                         ({"action": "restrict", "fp": "FlexMgmt", "max_kw": 1, "min_kw": 5}, "restriction_range"),
+                         ({"action": "restrict", "fp": "FlexMgmt", "max_kw": "lots"}, "not_a_number"),
+                         ({"action": "restrict", "fp": "FlexMgmt", "max_kw": "nan"}, "not_a_number"),
+                         ({"action": "tariff", "value": 0.42}, "unknown_action")):
+        resp = await post(sim_ui, "/api/sim/send", {"custom": custom, "confirm": True})
+        assert resp.status == 400 and (await resp.json())["code"] == code, custom
+    assert fake_ems.ems.restriction is None
+    resp = await post(sim_ui, "/api/sim/send", {"custom": {"action": "restrict", "fp": "FlexMgmt", "max_kw": 4.5,
+                                                           "minutes": 20}, "confirm": True})
+    assert resp.status == 200
+    assert fake_ems.ems.restriction == {"RestrictionActive": True, "Restriction": {
+        "MinimumPowerKw": -1000.0, "MaximumPowerKw": 4.5, "DurationInMinutes": 20}}
+
+
+async def test_stopping_the_player_restores_normal_and_releases(sim_ui, fake_ems):
+    await connected(sim_ui, fake_ems)
+    body = {"scenario": "constraint", "interval_s": 0.3, "loop": True}
+    assert (await post(sim_ui, "/api/sim/start", body)).status == 400  # not confirmed
+    unknown = await post(sim_ui, "/api/sim/start", {"scenario": "nope", "confirm": True})
+    assert (await unknown.json())["code"] == "unknown_scenario"
+    resp = await post(sim_ui, "/api/sim/start", {**body, "confirm": True})
+    assert resp.status == 200 and (await resp.json())["player"]["running"] is True
+    await until(lambda: fake_ems.ems.state == "LOCKED")  # step 3: an emergency lock, under a 3 kW cap
+    assert fake_ems.ems.restriction["RestrictionActive"] is True
+    # While it plays, nothing else commands the EMS.
+    for path, extra in (("/api/sim/send", {"preset": "mode:UniDirFlexLoadMgmt:MAX"}), ("/api/sim/start", body),
+                        ("/api/sim/release", {}),
+                        ("/api/console/write", {"fp": "UniDirFlexLoadMgmt", "dp": "OpModeLoadCmd", "value": "MAX"})):
+        refused = await post(sim_ui, path, {**extra, "confirm": True})
+        assert refused.status == 409 and (await refused.json())["code"] == "player_running", path
+    run = await post(sim_ui, "/api/jobs", {"kind": "compliance", "tests": ["P1"]})
+    assert run.status == 409 and (await run.json())["code"] == "player_running"
+    stop = await (await post(sim_ui, "/api/sim/stop", {})).json()
+    assert stop["player"]["running"] is False and stop["player"]["stop_reason"] == "user"
+    assert fake_ems.ems.cmd == "NORMAL" and fake_ems.ems.state == "NORMAL"
+    assert fake_ems.ems.restriction["RestrictionActive"] is False
+    codes = [e["code"] for e in (await timeline(sim_ui))["events"]]
+    assert codes.count("restored") == 2 and "player_step" in codes and "restore_failed" not in codes
+    assert codes.index("player_stopped") > max(i for i, c in enumerate(codes) if c == "restored")
+
+
+async def test_a_finished_scenario_ends_released(sim_ui, fake_ems):
+    await connected(sim_ui, fake_ems)
+    await post(sim_ui, "/api/sim/start", {"scenario": "stress", "interval_s": 0.05, "loop": False, "confirm": True})
+    data = await stopped(sim_ui)
+    assert data["player"]["stop_reason"] == "finished" and data["player"]["index"] == 4
+    codes = [e["code"] for e in data["events"]]
+    assert "player_finished" in codes and fake_ems.ems.state == "NORMAL"
+    sent = [e["params"]["value"] for e in data["events"] if e["code"] == "cmd_mode"]
+    assert sent == ["MAX", "LOCKED", "REDUCED", "NORMAL", "NORMAL"]  # the last one: the release
+
+
+async def test_a_page_gone_quiet_stops_the_player_and_releases(tmp_path, fake_ems):
+    cfg = config(tmp_path, min_step_s=0.05, sim_lease_s=0.4, sim_read_every_s=0.0)
+    client = TestClient(TestServer(create_app(cfg)), cookie_jar=aiohttp.CookieJar(unsafe=True))
+    await client.start_server()
+    try:
+        await connected(client, fake_ems)
+        await post(client, "/api/sim/start", {"scenario": "stress", "interval_s": 0.1, "loop": True, "confirm": True})
+        await until(lambda: fake_ems.ems.state == "LOCKED")
+        await asyncio.sleep(1.0)  # nobody polls the timeline
+        data = await timeline(client)
+        assert data["player"]["running"] is False and data["player"]["stop_reason"] == "lease"
+        assert fake_ems.ems.cmd == "NORMAL" and fake_ems.ems.state == "NORMAL"
+    finally:
+        await client.close()
+
+
+async def test_the_end_of_the_session_releases_what_the_player_drove(tmp_path, fake_ems):
+    client = TestClient(TestServer(create_app(config(tmp_path, min_step_s=0.05))),
+                        cookie_jar=aiohttp.CookieJar(unsafe=True))
+    await client.start_server()
+    try:
+        await connected(client, fake_ems)
+        await post(client, "/api/sim/start", {"scenario": "stress", "interval_s": 30, "loop": True, "confirm": True})
+        await until(lambda: fake_ems.ems.cmd == "MAX")
+        # Disconnecting ends the player: it releases through the connection it drove.
+        await post(client, "/api/console/disconnect", {})
+        assert fake_ems.ems.cmd == "NORMAL"
+        data = await timeline(client)
+        assert data["connected"] is False and data["player"]["stop_reason"] == "session"
+        # And the process ending releases a player still playing.
+        assert (await post(client, "/api/console/connect", {})).status == 200
+        await post(client, "/api/sim/start", {"scenario": "stress", "interval_s": 30, "loop": True, "confirm": True})
+        await until(lambda: fake_ems.ems.cmd == "MAX")
+    finally:
+        await client.close()
+    assert fake_ems.ems.cmd == "NORMAL" and fake_ems.ems.state == "NORMAL"
+
+
+def test_every_simulator_text_is_translated_in_every_language():
+    from grd_sgr import simulator
+
+    strings = i18n_strings()
+    keys = {f"sim.ev.{c}" for c in simulator.EVENT_CODES}
+    keys |= {f"sim.badge.{b}" for b in simulator.BADGES}
+    keys |= {f"sim.stop.{r}" for r in simulator.STOP_REASONS}
+    keys |= {f"sim.sc.{s}" for s in simulator.SCENARIOS}
+    keys |= {f"sim.reason.{r}" for r in simulator.SCENARIO_REASONS}
+    keys |= {f"sim.why.{w}" for w in simulator.WHY}
+    keys |= {f"sim.origin.{o}" for o in ("console", "manual", "player", "release")}
+    keys |= {f"sim.evidence.{e}" for e in ("ok", "none", "error", "unknown")}
+    keys |= {f"sim.who.{w}" for w in ("grd", "ems", "err", "info")}
+    presets = sim_view(EXAMPLE_XML)["presets"] + sim_view(without_profile(
+        without_profile(EXAMPLE_XML, "FlexMgmt"), "UniDirFlexLoadMgmt"))["presets"]
+    for key in (*simulator.KNOWN_LITERALS, "other"):
+        keys |= {f"sim.p.{key}.t", f"sim.p.{key}.d"}
+    keys |= {f"sim.p.{p['key']}.t" for p in presets}
+    keys |= {f"sim.p.{p['key']}.d" for p in presets if p["available"]}
+    for lang in LANGS:
+        assert not sorted(keys - set(strings[lang])), lang
+    js = (STATIC / "app.js").read_text(encoding="utf-8")
+    for family in ("sim.ev", "sim.badge", "sim.sc", "sim.why", "sim.p", "sim.who", "sim.evidence"):
+        assert f"`{family}.${{" in js, family
+    server = Path(ui_module.__file__).read_text(encoding="utf-8")
+    for family in ("sim.origin", "sim.reason", "sim.sc", "sim.stop"):
+        assert f'f"{family}.{{' in server, family

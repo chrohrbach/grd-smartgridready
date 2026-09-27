@@ -95,15 +95,31 @@ grd-sgr tariff-run --scenarios normal,dst_spring,http_500 --dwell 600 \
 grd-sgr ui          # prints http://127.0.0.1:8770/?token=… — open it
 ```
 
-Four tabs:
+Five tabs:
+- **Simulator** (the first): a grid operator's desk. Connect to the EMS, then
+  send one-click commands, a custom command, or let the automatic mode play a
+  scenario (typical day, evening peak, sunny day, grid constraint, stress
+  test) at the pace you choose. A live timeline sets each command beside the
+  EMS's reaction: its evidence journal (accepted, applied, deferred, not
+  applied) and the state read back. Everything offered comes from the EID:
+  operating modes are the enum literals of its SGCP mode command (such as
+  UniDirFlexLoadMgmt `OpModeLoadCmd`), load shedding is FlexMgmt
+  `RestrictPower`. A command the EID cannot carry is shown disabled, with the
+  reason. Tariff and grid-frequency signals are not SGCP commands, so they
+  are listed but never sent (the Tariffs tab serves the dynamic tariff).
+  The automatic mode runs on the server. It always ends by writing NORMAL and
+  releasing the restriction on every point it commanded: when you stop it,
+  when the scenario ends, when the page closes or stops polling for 150 s,
+  when you disconnect or change the target, and when the process stops.
+  While it plays, no other command is sent to the EMS.
 - **EMS**: load its EID; its configuration values become a form. Add the
   evidence API and a reference meter if you have them.
 - **Compliance**: choose the families and run them. The results appear test by
   test, and each run gives its audit report and evidence.
 - **Tariffs**: serve the tariff scenarios while the EMS polls them, then judge
   T1–T6.
-- **Console**: talk to the EMS as a grid operator would. Read its data points,
-  send a mode or a restriction, and watch its evidence journal.
+- **Console**: the raw view of the same connection. Read every data point,
+  write any writable one, and read the evidence journal as a table.
 
 The interface speaks English, French, German and Italian: switch in the header,
 or open it with `?lang=fr` (or `de`, `it`); the audit report stays in English.
