@@ -8,9 +8,10 @@ dynamic = ["version"]
 description = "SmartGridready test bench for energy management systems: drives the EMS through its own EID as a DSO flexibility manager, serves the VSE dynamic-tariff API, and validates declarations."
 readme = "README.md"
 requires-python = ">=3.10"
-# The tool is MIT; the vendored SmartGridready specification keeps its own
-# BSD-3-Clause licence (src/grd_sgr/spec/LICENSE-SmartGridready.txt).
-license = "MIT AND BSD-3-Clause"
+# The tool is under the Business Source License 1.1 (MIT on the Change Date);
+# the vendored SmartGridready specification keeps its own BSD-3-Clause licence
+# (src/grd_sgr/spec/LICENSE-SmartGridready.txt).
+license = "BUSL-1.1 AND BSD-3-Clause"
 license-files = ["LICENSE", "src/grd_sgr/spec/LICENSE-SmartGridready.txt"]
 authors = [{ name = "Teleia SaRL" }]
 keywords = ["smartgridready", "sgr", "ems", "dso", "flexibility", "dynamic tariff", "test"]

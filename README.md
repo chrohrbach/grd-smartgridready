@@ -32,7 +32,7 @@ values, the reports keep their shape.
 > a manufacturer, an installer or a grid operator can attach to a declaration or
 > use during commissioning. It is independent and not endorsed by the association.
 
-![Python](https://img.shields.io/badge/python-3.10%2B-blue) ![License](https://img.shields.io/badge/license-MIT-green)
+![Python](https://img.shields.io/badge/python-3.10%2B-blue) ![License](https://img.shields.io/badge/license-BSL%201.1-orange)
 
 ## Install
 
@@ -289,6 +289,18 @@ declares, and it contains no code specific to any vendor.
 
 ## License
 
-MIT, see [LICENSE](LICENSE). The vendored SmartGridready specification in
+Business Source License 1.1, see [LICENSE](LICENSE). In short:
+
+- You may read, copy, modify and run the bench for evaluation and development.
+- You may use it in production to test the energy management systems you
+  develop, operate or install, and to issue reports on them.
+- You may not offer it, or a work derived from it, to third parties as a
+  hosted, managed or paid testing service, nor ship it inside a product.
+- On the Change Date (2027-03-31) the code becomes MIT-licensed.
+
+For other arrangements, write to info@casasmooth.com.
+
+Commits published before this licence was adopted remain under the MIT
+License they were published with. The vendored SmartGridready specification in
 `src/grd_sgr/spec/` keeps its BSD 3-Clause licence
 (`spec/LICENSE-SmartGridready.txt`, Copyright (c) 2023, SmartgridReady).

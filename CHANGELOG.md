@@ -4,6 +4,11 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Licence
+- The bench moves from MIT to the Business Source License 1.1, with an
+  Additional Use Grant for testing your own energy management systems; it
+  becomes MIT on 2027-03-31. Commits published before this change remain MIT.
+
 The bench becomes vendor-neutral: nothing in it is specific to one EMS. It
 gains a web interface, and every run gives an audit report.
 

@@ -370,6 +370,6 @@ def render_html(results: list[Result], meta: dict[str, Any], json_sha256: str | 
                 f"<p>SHA-256 of <code>report.json</code>: <code>{_e(json_sha256)}</code>. The JSON holds every "
                 "raw observation behind these verdicts; recompute its hash to check that this report was "
                 "rendered from it.</p>"]
-    out += [f"<footer>grd-smartgridready {_e(version)} · MIT · "
+    out += [f"<footer>grd-smartgridready {_e(version)} · BSL 1.1 · "
             "https://github.com/chrohrbach/grd-smartgridready</footer>", "</main></body></html>"]
     return "\n".join(out) + "\n"
