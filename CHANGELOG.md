@@ -105,8 +105,9 @@ gains a web interface, and every run gives an audit report.
   "The server answered HTTP 502" instead of what the EMS answered. A 502 or
   504 that still reaches the page now says that a proxy replaced the answer.
 - The web interface refuses a REST address with the port after a slash
-  (`https://host/:28100`). The port landed in the path, every call answered
-  404, and the CommHandler hid the failed authentication.
+  (`https://host/:28100`), or ending with `/` when the EID's paths start with
+  one (`https://host/` + `/api/x`). The CommHandler joins them as they are, so
+  every call answered 404, and it hid the failed authentication.
 
 ## [2.0.0] — 2026-09-25
 

@@ -295,6 +295,11 @@ async def test_a_port_after_a_slash_is_refused_before_anything_is_sent(ui, fake_
         data = await resp.json()
         assert resp.status == 400 and data["code"] == "port_in_path", base
         assert data["params"]["address"].startswith(base.rstrip("/")) and data["params"]["subject"] == "ems"
+    for base in ("https://box-42.casasmooth.net/", f"{fake_ems.base_url}/"):
+        resp = await post(ui, "/api/target", {"eid": {"name": "ems.xml", "xml": EXAMPLE_XML},
+                                              "props": {"base_uri": base, "api_key": "k"}})
+        data = await resp.json()
+        assert resp.status == 400 and data["code"] == "trailing_slash", base
     for base in ("https://box-42.casasmooth.net", "http://192.168.1.20:28100", fake_ems.base_url):
         resp = await post(ui, "/api/target", {"eid": {"name": "ems.xml", "xml": EXAMPLE_XML},
                                               "props": {"base_uri": base, "api_key": "k"}})

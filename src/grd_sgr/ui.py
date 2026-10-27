@@ -346,17 +346,24 @@ PORT_IN_PATH_RE = re.compile(r"/:\d+(?=/|$)")
 
 
 def _check_address(raw_text: str, props: dict[str, str], subject: str) -> None:
-    """A REST address with the port after a slash (``https://host/:8080``) is
-    a typo the CommHandler does not catch: the port lands in the path, every
-    call answers 404, and the failed authentication goes unnoticed. Said here,
-    before anything is sent."""
-    eid = parse_eid(instantiate_text(raw_text, resolve_properties(raw_text, props)))
+    """Typos in a REST address the CommHandler does not catch, said here
+    before anything is sent. It joins the address and each requestPath as
+    they are, so the port after a slash (``https://host/:8080``) or a final
+    slash before a path that starts with one (``https://host/`` +
+    ``/api/x``) changes the path: every call answers 404, and the failed
+    authentication goes unnoticed."""
+    text = instantiate_text(raw_text, resolve_properties(raw_text, props))
+    eid = parse_eid(text)
     desc = eid.rest_description() if eid.interface_type == "rest" else None
     uri = (desc.findtext(f"{NS}restApiUri") or "").strip() if desc is not None else ""
     if PORT_IN_PATH_RE.search(urlsplit(uri).path):
         raise Refused(400, "port_in_path", f"{SUBJECTS[subject]}: in {uri} the port follows a '/'; write it "
                       "right after the host name (http://host:port), or leave it out for an https address",
                       subject=subject, address=uri)
+    if uri.endswith("/") and any((el.text or "").strip().startswith("/")
+                                 for el in ET.fromstring(text).iter(f"{NS}requestPath")):
+        raise Refused(400, "trailing_slash", f"{SUBJECTS[subject]}: {uri} ends with '/' and the paths of "
+                      "this EID start with one; remove the final '/'", subject=subject, address=uri)
 
 
 def _check_reach(cfg: UiConfig, raw_text: str, props: dict[str, str], subject: str) -> None:
