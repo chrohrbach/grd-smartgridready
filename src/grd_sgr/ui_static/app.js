@@ -168,6 +168,10 @@ function errorMessage(error) {
     if (params.subject) params.subject = { $t: `subject.${params.subject}`, fallback: params.subject };
     return [`err.${error.code}`, params];
   }
+  // The tool never answers 502 or 504 itself: without a message, a proxy replaced its answer.
+  if (error instanceof ApiError && !error.message && (error.status === 502 || error.status === 504)) {
+    return ["err.http_proxy", { status: error.status }];
+  }
   if (error instanceof ApiError && !error.message) return ["err.http", { status: error.status }];
   return null;
 }

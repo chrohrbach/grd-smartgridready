@@ -283,6 +283,12 @@ class Refused(Exception):
 # Who a refusal is about: the code goes to the interface, the English name to the message.
 SUBJECTS = {"ems": "EMS", "meter": "reference meter"}
 
+# The EMS (or its evidence API) failed, not this tool. Not 502 or 504: a proxy
+# in front of a hosted instance (Cloudflare, among others) replaces a 502/504
+# body with its own error page, and the visitor then sees a bare "HTTP 502"
+# instead of what the EMS answered.
+UPSTREAM_FAILED = 424
+
 
 # -- helpers ---------------------------------------------------------------------------------
 
@@ -334,6 +340,23 @@ def _host_allowed(url: str, allowed: tuple[str, ...], denied: tuple[str, ...] = 
     if host in denied:
         return False
     return any(host == a or host.endswith("." + a) for a in allowed)
+
+
+PORT_IN_PATH_RE = re.compile(r"/:\d+(?=/|$)")
+
+
+def _check_address(raw_text: str, props: dict[str, str], subject: str) -> None:
+    """A REST address with the port after a slash (``https://host/:8080``) is
+    a typo the CommHandler does not catch: the port lands in the path, every
+    call answers 404, and the failed authentication goes unnoticed. Said here,
+    before anything is sent."""
+    eid = parse_eid(instantiate_text(raw_text, resolve_properties(raw_text, props)))
+    desc = eid.rest_description() if eid.interface_type == "rest" else None
+    uri = (desc.findtext(f"{NS}restApiUri") or "").strip() if desc is not None else ""
+    if PORT_IN_PATH_RE.search(urlsplit(uri).path):
+        raise Refused(400, "port_in_path", f"{SUBJECTS[subject]}: in {uri} the port follows a '/'; write it "
+                      "right after the host name (http://host:port), or leave it out for an https address",
+                      subject=subject, address=uri)
 
 
 def _check_reach(cfg: UiConfig, raw_text: str, props: dict[str, str], subject: str) -> None:
@@ -650,8 +673,10 @@ async def api_target_post(request: web.Request) -> web.Response:
         if target.meter_eid_path is not None:
             target.meter_point = tuple(point.split(".", 1)) if "." in point else None
 
+    _check_address(eid_path.read_text(encoding="utf-8"), target.props, "ems")
     _check_reach(cfg, eid_path.read_text(encoding="utf-8"), target.props, "ems")
     if target.meter_eid_path is not None:
+        _check_address(target.meter_eid_path.read_text(encoding="utf-8"), target.meter_props, "meter")
         _check_reach(cfg, target.meter_eid_path.read_text(encoding="utf-8"), target.meter_props, "meter")
     if s.console is not None:
         # Another EMS, or other settings: the player releases the one it
@@ -930,13 +955,14 @@ async def api_console_connect(request: web.Request) -> web.Response:
         with contextlib.suppress(Exception):
             await device.close()
         detail = redactor.text(describe_error(exc))
-        raise Refused(502, "cannot_connect", "cannot connect: " + detail, detail=detail) from None
+        raise Refused(UPSTREAM_FAILED, "cannot_connect", "cannot connect: " + detail, detail=detail) from None
     s.console = Console(device=device, redactor=redactor, connected_utc=utc_now_iso())
     points = await _read_points(s)
     if points and all("error" in p for p in points):
         await _console_close(s)
-        raise Refused(502, "no_readable_point", "connected, but no data point can be read (authentication fails "
-                      "silently in the CommHandler): " + points[0]["error"], detail=points[0]["error"])
+        raise Refused(UPSTREAM_FAILED, "no_readable_point", "connected, but no data point can be read "
+                      "(authentication fails silently in the CommHandler): " + points[0]["error"],
+                      detail=points[0]["error"])
     s.sim.ev_cursor, s.sim.evidence, s.sim.evidence_error, s.sim.reaction_s = None, "unknown", "", None
     s.sim.states, s.sim.state_errors, s.sim.last_read = {}, {}, 0.0
     s.sim.reachable, s.sim.apply_enabled, s.sim.apply_reason, s.sim.devices = None, None, "", []
@@ -985,7 +1011,7 @@ async def api_console_evidence(request: web.Request) -> web.Response:
         events = await evidence.events(after_seq=after, limit=200)
     except Exception as exc:
         detail = s.console.redactor.text(describe_error(exc))
-        raise Refused(502, "evidence_api_error", "evidence API: " + detail, detail=detail) from None
+        raise Refused(UPSTREAM_FAILED, "evidence_api_error", "evidence API: " + detail, detail=detail) from None
     redactor = s.console.redactor
     return web.json_response({"available": True, "events": [redactor.value(e.__dict__) for e in events]})
 

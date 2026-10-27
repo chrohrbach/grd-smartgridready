@@ -99,6 +99,14 @@ gains a web interface, and every run gives an audit report.
 - `run --meter-eid` names the configuration values missing for the meter's EID
   instead of failing with a bare `KeyError` from the CommHandler, and refuses a
   meter it cannot build, as it refuses one it cannot read.
+- The web interface reports an EMS that fails (no connection, no readable
+  point, evidence API error) with HTTP 424 instead of 502. Behind Cloudflare,
+  a 502 body is replaced by the proxy's own page, and the visitor saw a bare
+  "The server answered HTTP 502" instead of what the EMS answered. A 502 or
+  504 that still reaches the page now says that a proxy replaced the answer.
+- The web interface refuses a REST address with the port after a slash
+  (`https://host/:28100`). The port landed in the path, every call answered
+  404, and the CommHandler hid the failed authentication.
 
 ## [2.0.0] — 2026-09-25
 

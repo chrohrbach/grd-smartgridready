@@ -269,6 +269,38 @@ async def test_the_console_reads_writes_and_shows_the_journal(ui, fake_ems):
     assert (await post(ui, "/api/console/disconnect", {})).status == 200
 
 
+async def test_an_ems_that_refuses_the_key_is_said_and_is_not_a_502(ui, fake_ems):
+    # The CommHandler swallows the failed authentication; the reads then fail.
+    # A proxy in front of a hosted instance replaces a 502 body with its own
+    # page, so the reason must travel under another status.
+    resp = await post(ui, "/api/target", {"eid": {"name": "ems.xml", "xml": EXAMPLE_XML},
+                                          "props": {"base_uri": fake_ems.base_url, "api_key": "wrong-key"}})
+    assert resp.status == 200
+    connect = await post(ui, "/api/console/connect", {})
+    data = await connect.json()
+    assert connect.status == ui_module.UPSTREAM_FAILED not in (502, 504)
+    assert data["code"] in ("no_readable_point", "cannot_connect") and data["params"]["detail"]
+
+
+def test_no_refusal_answers_502_or_504():
+    source = Path(ui_module.__file__).read_text(encoding="utf-8")
+    assert not re.search(r"Refused\(\s*50[24]\b", source)
+    assert ui_module.UPSTREAM_FAILED not in (502, 504)
+
+
+async def test_a_port_after_a_slash_is_refused_before_anything_is_sent(ui, fake_ems):
+    for base in ("https://box-42.casasmooth.net/:28100", f"{fake_ems.base_url}/:28100/"):
+        resp = await post(ui, "/api/target", {"eid": {"name": "ems.xml", "xml": EXAMPLE_XML},
+                                              "props": {"base_uri": base, "api_key": "k"}})
+        data = await resp.json()
+        assert resp.status == 400 and data["code"] == "port_in_path", base
+        assert data["params"]["address"].startswith(base.rstrip("/")) and data["params"]["subject"] == "ems"
+    for base in ("https://box-42.casasmooth.net", "http://192.168.1.20:28100", fake_ems.base_url):
+        resp = await post(ui, "/api/target", {"eid": {"name": "ems.xml", "xml": EXAMPLE_XML},
+                                              "props": {"base_uri": base, "api_key": "k"}})
+        assert resp.status == 200, base
+
+
 # -- hosted mode ----------------------------------------------------------------------------
 
 
