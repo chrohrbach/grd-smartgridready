@@ -78,9 +78,19 @@ The journal excuses only what the declaration backs:
 A reference meter that returns no reading never gives a PASS. The bench
 refuses to start when the meter point cannot be read at all.
 
+The effect is judged once it has arrived. Relays, devices and the meter take
+seconds to follow a command: 15 to 25 s on a real building, from the write to
+the meter. The bench therefore reads the meter from the command until a
+reading meets the criterion, at most until the end of the reaction window,
+and then judges the hold time. An effect not reached within the reaction
+window is judged on every reading taken until then, and the finding says it
+was not reached in time. The report gives the readings before the effect
+(`settling_kw`) and the delay (`settled_after_s`). MAX has no criterion, so its
+hold time starts right after the outcome.
+
 | ID | Test | Decides |
 |---|---|---|
-| F1 `[write]` | UniDirFlexLoadMgmt: LOCKED, REDUCED and MAX take effect, and NORMAL releases. | Per mode: the journal traces the command to an outcome; `OpLoadState` equals the mode (or a journalled `deferred` / `not_enforceable` explains why not, giving `INCONCLUSIVE`); `received_not_applied` / `observed_only` give `INCONCLUSIVE` with the EMS's statement. With a reference meter: LOCKED ≤ MinimumLoad + tolerance, which otherwise FAILS; REDUCED ≤ baseline × (1 − Curtailment), which otherwise warns, since the profile says "if possible"; MAX has no number in the profile. Without a meter: `HARDWARE_REQUIRED`. The test always ends by writing NORMAL and checks that OpLoadState follows. A level-2 profile (two contacts) is `HARDWARE_REQUIRED`: the CommHandler has no contact driver. |
+| F1 `[write]` | UniDirFlexLoadMgmt: LOCKED, REDUCED and MAX take effect, and NORMAL releases. | The modes run in the order REDUCED, LOCKED, MAX. REDUCED comes first, while the building still imports what it is asked to curtail: after LOCKED there is often nothing left to reduce. REDUCED then LOCKED stay one restriction period, so MinimumRunTime defers neither. Per mode: the journal traces the command to an outcome; `OpLoadState` equals the mode (or a journalled `deferred` / `not_enforceable` explains why not, giving `INCONCLUSIVE`); `received_not_applied` / `observed_only` give `INCONCLUSIVE` with the EMS's statement. With a reference meter: LOCKED ≤ MinimumLoad + tolerance, which otherwise FAILS; REDUCED ≤ baseline × (1 − Curtailment), which otherwise warns, since the profile says "if possible"; MAX has no number in the profile. Without a meter: `HARDWARE_REQUIRED`. The test always ends by writing NORMAL and checks that OpLoadState follows. A level-2 profile (two contacts) is `HARDWARE_REQUIRED`: the CommHandler has no contact driver. |
 | F4 `[write]` | FlexMgmt 4m RestrictPower holds the grid power in range and releases it. | A restriction at half the measured import (or 1 kW) for the window plus the hold time; same journal rules as F1. With a meter, a maximum above the cap plus tolerance FAILS. Ends with a neutral restriction. |
 
 ## T — Dynamic tariffs (`grd-sgr tariff-run`; the tool serves the VSE API)

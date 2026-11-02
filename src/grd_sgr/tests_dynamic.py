@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
@@ -588,6 +589,58 @@ async def _sample_meter(ctx: DynamicContext, seconds: float, every: float | None
     return samples, attempts
 
 
+async def _await_effect(ctx: DynamicContext, holds: Callable[[float], bool], started: float,
+                        window: float) -> tuple[list[float], int, float | None]:
+    """Readings from the command until one meets the criterion, at most until
+    the end of the declared reaction time.
+
+    Relays, devices and meters take seconds to follow a command (15 to 25 s on
+    a real building, from the grid operator's write to the meter), and the
+    profile gives the EMS its declared reaction time: a reading taken before
+    the effect arrives is not the EMS failing. ``started`` is the monotonic
+    time of the command. Returns (readings, attempts, seconds from the command
+    to the first reading that met the criterion, or None when none did)."""
+    readings: list[float] = []
+    attempts = 0
+    while True:
+        attempts += 1
+        value = await _meter_kw(ctx)
+        elapsed = time.monotonic() - started
+        if value is not None:
+            readings.append(value)
+            if holds(value) and elapsed <= window:
+                return readings, attempts, round(elapsed, 1)
+        if elapsed >= window:
+            return readings, attempts, None
+        await asyncio.sleep(ctx.meter_every_s)
+
+
+async def _judged_readings(ctx: DynamicContext, holds: Callable[[float], bool] | None, started: float,
+                           window: float) -> tuple[list[float], int, dict[str, Any]]:
+    """The readings an effect is judged on: the hold time once the criterion
+    is met, or — when it never is within the reaction time — every reading
+    taken until then. The third value goes to the report."""
+    if holds is None:
+        samples, attempts = await _sample_meter(ctx, min(ctx.hold_s, 60.0))
+        return samples, attempts, {}
+    settling, settle_attempts, settled_after = await _await_effect(ctx, holds, started, window)
+    if settled_after is None:
+        return settling, settle_attempts, {"settling_kw": settling, "settled_after_s": None}
+    samples, attempts = await _sample_meter(ctx, min(ctx.hold_s, 60.0))
+    return samples, attempts, {"settling_kw": settling, "settled_after_s": settled_after}
+
+
+def _at_most(limit_kw: float) -> Callable[[float], bool]:
+    return lambda kw: kw <= limit_kw
+
+
+def _late(extra: dict[str, Any], window: float) -> str:
+    """What a finding adds when the effect never arrived in time."""
+    if extra and extra.get("settled_after_s") is None:
+        return f", not reached within the declared reaction time ({window:.0f} s)"
+    return ""
+
+
 def _meter_usable(samples: list[float], attempts: int, findings: list[Finding], what: str) -> bool:
     """False when the meter gave nothing to judge with; a partial series is
     judged but said, and cannot give a PASS (a missing reading can hide a peak)."""
@@ -771,6 +824,7 @@ async def _f1_mode(case, ctx: DynamicContext, fp: EidFunctionalProfile, mode: st
     evidence: list[Observation] = []
     state_dp = fp.data_point("OpLoadState")
     cursor = await _evidence_cursor(ctx)
+    started = time.monotonic()
     rec = await _write(ctx, fp.name, "OpModeLoadCmd", mode, "functional")
     if not rec.ok:
         return case.result(Verdict.FAIL, subject, findings=[Finding("error", f"command refused: {rec.error}")])
@@ -792,9 +846,19 @@ async def _f1_mode(case, ctx: DynamicContext, fp: EidFunctionalProfile, mode: st
     if judged == "held_back":
         return case.result(_cap_unjudged(verdict), subject, findings=findings, evidence=evidence,
                            duration_s=sw.elapsed())
-    samples, attempts = await _sample_meter(ctx, min(ctx.hold_s, 60.0)) if ctx.meter else ([], 0)
+    # The criterion the effect is awaited on (none for MAX: the profile gives no number).
+    holds: Callable[[float], bool] | None = None
+    target: float | None = None
+    if mode == "LOCKED" and crit.min_load is not None and crit.min_load.as_float() is not None:
+        holds = _at_most(crit.min_load.as_float() + ctx.meter_tolerance_kw)
+    elif (mode == "REDUCED" and crit.curtailment is not None and crit.curtailment.as_float() is not None
+          and crit.baseline_usable):
+        target = (sum(crit.baseline) / len(crit.baseline)) * (1 - crit.curtailment.as_float() / 100.0)
+        holds = _at_most(target + ctx.meter_tolerance_kw)
+    samples, attempts, extra = (await _judged_readings(ctx, holds, started, window)
+                                if ctx.meter else ([], 0, {}))
     evidence.append(Observation("meter", {"baseline_kw": crit.baseline, "baseline_state": crit.found_state,
-                                          "samples_kw": samples, "attempts": attempts}))
+                                          "samples_kw": samples, "attempts": attempts, **extra}))
     if ctx.meter is None:
         findings.append(Finding("info", "physical effect not measured: no reference meter (--meter-eid)"))
         if verdict == Verdict.PASS:
@@ -808,19 +872,20 @@ async def _f1_mode(case, ctx: DynamicContext, fp: EidFunctionalProfile, mode: st
                 findings.append(Finding("warning", "MinimumLoad not declared: no criterion for LOCKED"))
                 verdict = _cap_unjudged(verdict)
             elif max(samples) > crit.min_load.as_float() + ctx.meter_tolerance_kw:
-                findings.append(Finding("error", f"import {max(samples):.2f} kW above MinimumLoad {crit.min_load.value}"))
+                findings.append(Finding("error", f"import {max(samples):.2f} kW above MinimumLoad "
+                                                 f"{crit.min_load.value}{_late(extra, window)}"))
                 verdict = Verdict.FAIL
         elif mode == "REDUCED":
-            if crit.curtailment is None or crit.curtailment.as_float() is None or not crit.baseline_usable:
+            if target is None:
                 verdict = _cap_unjudged(verdict)
                 findings.append(Finding("warning", "no Curtailment, or no complete baseline measured in NORMAL: "
                                                    "REDUCED not judgeable"))
             else:
-                target = (sum(crit.baseline) / len(crit.baseline)) * (1 - crit.curtailment.as_float() / 100.0)
                 mean = sum(samples) / len(samples)
                 if mean > target + ctx.meter_tolerance_kw:
-                    findings.append(Finding("warning", f"mean import {mean:.2f} kW above target {target:.2f} kW "
-                                                         "('if possible' in the profile: not a FAIL)"))
+                    findings.append(Finding("warning", f"mean import {mean:.2f} kW above target {target:.2f} kW"
+                                                       f"{_late(extra, window)} ('if possible' in the profile: "
+                                                       "not a FAIL)"))
                     verdict = _cap_unjudged(verdict)
         else:  # MAX: the profile gives no number
             findings.append(Finding("info", "MAX has no quantitative criterion in the profile"))
@@ -875,7 +940,11 @@ async def f1_load_modes(case, ctx: DynamicContext) -> list[Result]:
             found_state=found_state,
         )
         try:
-            for mode in ("LOCKED", "REDUCED", "MAX"):
+            # REDUCED first, while the building still imports what it is asked
+            # to curtail: after LOCKED there is often nothing left to reduce,
+            # and the EMS rightly says so. REDUCED then LOCKED stay one
+            # restriction period, so MinimumRunTime defers neither.
+            for mode in ("REDUCED", "LOCKED", "MAX"):
                 try:
                     out.append(await _f1_mode(case, ctx, fp, mode, window, crit))
                 except Exception as exc:  # recorded; the release below still runs and is reported
@@ -919,6 +988,7 @@ async def f4_restrict_power(case, ctx: DynamicContext) -> list[Result]:
                                        "DurationInMinutes": max(1, int((window + ctx.hold_s) // 60) + 1)}}
         try:
             cursor = await _evidence_cursor(ctx)
+            started = time.monotonic()
             rec = await _write(ctx, fp.name, "RestrictPower", restriction, "functional")
             if not rec.ok:
                 out.append(case.result(Verdict.FAIL, fp.name, findings=[Finding("error", f"refused: {rec.error}")]))
@@ -935,9 +1005,11 @@ async def f4_restrict_power(case, ctx: DynamicContext) -> list[Result]:
                 out.append(case.result(_cap_unjudged(verdict), fp.name, findings=findings, evidence=evidence,
                                        duration_s=sw.elapsed()))
                 continue
-            samples, attempts = await _sample_meter(ctx, min(ctx.hold_s, 60.0)) if ctx.meter else ([], 0)
+            samples, attempts, extra = (
+                await _judged_readings(ctx, _at_most(cap + ctx.meter_tolerance_kw), started, window)
+                if ctx.meter else ([], 0, {}))
             evidence.append(Observation("meter", {"cap_kw": cap, "measured_before_kw": current,
-                                                  "samples_kw": samples, "attempts": attempts}))
+                                                  "samples_kw": samples, "attempts": attempts, **extra}))
             if ctx.meter is None:
                 findings.append(Finding("info", "physical effect not measured: no reference meter (--meter-eid)"))
                 if verdict == Verdict.PASS:
@@ -945,7 +1017,8 @@ async def f4_restrict_power(case, ctx: DynamicContext) -> list[Result]:
             elif not _meter_usable(samples, attempts, findings, "restriction"):
                 verdict = _cap_unjudged(verdict)
             elif max(samples) > cap + ctx.meter_tolerance_kw:
-                findings.append(Finding("error", f"grid power {max(samples):.2f} kW above the {cap} kW restriction"))
+                findings.append(Finding("error", f"grid power {max(samples):.2f} kW above the {cap} kW "
+                                                 f"restriction{_late(extra, window)}"))
                 verdict = Verdict.FAIL
             elif len(samples) < attempts and verdict == Verdict.PASS:
                 verdict = Verdict.INCONCLUSIVE

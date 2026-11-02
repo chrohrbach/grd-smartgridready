@@ -108,6 +108,16 @@ gains a web interface, and every run gives an audit report.
   (`https://host/:28100`), or ending with `/` when the EID's paths start with
   one (`https://host/` + `/api/x`). The CommHandler joins them as they are, so
   every call answered 404, and it hid the failed authentication.
+- F1 and F4 judge the effect once it has arrived. Relays, devices and the
+  meter take seconds to follow a command (15 to 25 s on a real building), and
+  the readings taken in the meantime failed a building that met the criterion
+  well within its declared reaction time. The bench now reads the meter from
+  the command until the criterion holds, at most for the reaction window, then
+  judges the hold time. An effect not reached in time is judged on what was
+  read, and fails. The report gives `settling_kw` and `settled_after_s`.
+- F1 plays REDUCED before LOCKED, while the building still imports what it is
+  asked to curtail. After LOCKED, an EMS rightly answered that there was
+  nothing left to reduce, so REDUCED was never judged.
 
 ## [2.0.0] — 2026-09-25
 
